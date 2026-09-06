@@ -8,14 +8,41 @@ export const ACCEPTED_DOCUMENT_MIME_TYPES = [
   'image/jpeg',
   'image/png',
   'image/webp',
+  'image/gif',
+  'image/bmp',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document', // .docx
+  'application/msword', // .doc
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation', // .pptx
+  'application/vnd.ms-powerpoint', // .ppt
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', // .xlsx
+  'application/vnd.ms-excel', // .xls
+  'text/plain',
+  'text/csv',
 ];
 
-export const ACCEPTED_EXTENSIONS = ['.pdf', '.jpg', '.jpeg', '.png', '.webp'];
+export const ACCEPTED_EXTENSIONS = [
+  '.pdf',
+  '.jpg',
+  '.jpeg',
+  '.png',
+  '.webp',
+  '.gif',
+  '.docx',
+  '.doc',
+  '.pptx',
+  '.ppt',
+  '.xlsx',
+  '.xls',
+  '.txt',
+  '.csv',
+];
 
 export interface ValidationResult {
   valid: boolean;
   error?: string;
   isImage: boolean;
+  isPdf?: boolean;
+  isOffice?: boolean;
 }
 
 export function validateDocumentFile(file: File): ValidationResult {
@@ -25,103 +52,138 @@ export function validateDocumentFile(file: File): ValidationResult {
     return {
       valid: false,
       isImage: false,
+      isPdf: false,
+      isOffice: false,
       error: `File size (${sizeInMb}MB) exceeds the maximum allowed limit of 20MB.`,
     };
   }
 
   // Check type & extension
-  const extension = '.' + file.name.split('.').pop()?.toLowerCase();
+  const extension = '.' + (file.name.split('.').pop()?.toLowerCase() || '');
   const isPdf = file.type === 'application/pdf' || extension === '.pdf';
   const isImage =
     file.type.startsWith('image/') ||
-    ['.jpg', '.jpeg', '.png', '.webp'].includes(extension);
+    ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp'].includes(extension);
+  const isOffice =
+    ['.docx', '.doc', '.pptx', '.ppt', '.xlsx', '.xls', '.txt', '.csv'].includes(extension) ||
+    ACCEPTED_DOCUMENT_MIME_TYPES.includes(file.type);
 
-  if (!isPdf && !isImage) {
+  if (!isPdf && !isImage && !isOffice) {
     return {
       valid: false,
       isImage: false,
-      error: `Unsupported file format (${extension || file.type}). Please upload a PDF or image (JPEG, PNG, WEBP).`,
+      isPdf: false,
+      isOffice: false,
+      error: `Unsupported file format (${extension || file.type}). Please upload a PDF, image, or Office document (DOCX, PPTX, XLSX).`,
     };
   }
 
   return {
     valid: true,
     isImage,
+    isPdf,
+    isOffice: !isPdf && !isImage,
   };
 }
 
 /**
- * Converts an image file (PNG, JPG, WEBP) to a standardized PDF Blob using pdf-lib.
- * Handles client-side canvas rasterization if needed to support all image types.
+ * Converts multiple image files (PNG, JPG, WEBP) to one standardized single PDF Blob using pdf-lib.
+ * Every selected image is appended as its own page into one single PDF document, strictly in the
+ * order they were selected.
  */
-export async function convertImageToPdf(file: File): Promise<{ pdfBlob: Blob; pdfFile: File; pageCount: number }> {
-  const arrayBuffer = await file.arrayBuffer();
-  const pdfDoc = await PDFDocument.create();
-
-  let embeddedImage;
-  const isPng = file.type === 'image/png' || file.name.toLowerCase().endsWith('.png');
-  const isJpg =
-    file.type === 'image/jpeg' ||
-    file.name.toLowerCase().endsWith('.jpg') ||
-    file.name.toLowerCase().endsWith('.jpeg');
-
-  try {
-    if (isPng) {
-      embeddedImage = await pdfDoc.embedPng(arrayBuffer);
-    } else if (isJpg) {
-      embeddedImage = await pdfDoc.embedJpg(arrayBuffer);
-    } else {
-      // For WEBP or other browser-supported images, convert via an offscreen HTML Canvas
-      const pngBlob = await convertImageBlobToPng(file);
-      const pngBuffer = await pngBlob.arrayBuffer();
-      embeddedImage = await pdfDoc.embedPng(pngBuffer);
-    }
-  } catch {
-    // Fallback: load into Image element and convert to PNG via canvas
-    const pngBlob = await convertImageBlobToPng(file);
-    const pngBuffer = await pngBlob.arrayBuffer();
-    embeddedImage = await pdfDoc.embedPng(pngBuffer);
+export async function convertImagesToPdf(
+  files: File[],
+  onProgress?: (status: string) => void
+): Promise<{ pdfBlob: Blob; pdfFile: File; pageCount: number }> {
+  if (!files || files.length === 0) {
+    throw new Error('No images provided for PDF conversion');
   }
 
-  const { width: imgWidth, height: imgHeight } = embeddedImage;
+  const pdfDoc = await PDFDocument.create();
 
   // Standard A4 dimensions in points: 595.28 x 841.89
   const a4Width = 595.28;
   const a4Height = 841.89;
-
-  // Scale image to fit neatly within A4 with 30pt margins
   const margin = 36; // 0.5 inch margins
   const maxWidth = a4Width - margin * 2;
   const maxHeight = a4Height - margin * 2;
 
-  const scale = Math.min(maxWidth / imgWidth, maxHeight / imgHeight, 1);
-  const renderWidth = imgWidth * scale;
-  const renderHeight = imgHeight * scale;
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
+    onProgress?.(`Processing page ${i + 1} of ${files.length} (${file.name})...`);
 
-  const page = pdfDoc.addPage([a4Width, a4Height]);
-  const x = (a4Width - renderWidth) / 2;
-  const y = (a4Height - renderHeight) / 2;
+    const arrayBuffer = await file.arrayBuffer();
+    let embeddedImage;
 
-  page.drawImage(embeddedImage, {
-    x,
-    y,
-    width: renderWidth,
-    height: renderHeight,
-  });
+    const isPng = file.type === 'image/png' || file.name.toLowerCase().endsWith('.png');
+    const isJpg =
+      file.type === 'image/jpeg' ||
+      file.name.toLowerCase().endsWith('.jpg') ||
+      file.name.toLowerCase().endsWith('.jpeg');
 
+    try {
+      if (isPng) {
+        embeddedImage = await pdfDoc.embedPng(arrayBuffer);
+      } else if (isJpg) {
+        embeddedImage = await pdfDoc.embedJpg(arrayBuffer);
+      } else {
+        // For WEBP or other browser-supported images, convert via an offscreen HTML Canvas
+        const pngBlob = await convertImageBlobToPng(file);
+        const pngBuffer = await pngBlob.arrayBuffer();
+        embeddedImage = await pdfDoc.embedPng(pngBuffer);
+      }
+    } catch {
+      // Fallback: load into Image element and convert to PNG via canvas
+      const pngBlob = await convertImageBlobToPng(file);
+      const pngBuffer = await pngBlob.arrayBuffer();
+      embeddedImage = await pdfDoc.embedPng(pngBuffer);
+    }
+
+    const { width: imgWidth, height: imgHeight } = embeddedImage;
+    const scale = Math.min(maxWidth / imgWidth, maxHeight / imgHeight, 1);
+    const renderWidth = imgWidth * scale;
+    const renderHeight = imgHeight * scale;
+
+    const page = pdfDoc.addPage([a4Width, a4Height]);
+    const x = (a4Width - renderWidth) / 2;
+    const y = (a4Height - renderHeight) / 2;
+
+    page.drawImage(embeddedImage, {
+      x,
+      y,
+      width: renderWidth,
+      height: renderHeight,
+    });
+  }
+
+  onProgress?.('Finalizing merged PDF document...');
   const pdfBytes = await pdfDoc.save();
   const pdfBlob = new Blob([pdfBytes as unknown as BlobPart], { type: 'application/pdf' });
 
-  // Generate clean filename
-  const baseName = file.name.substring(0, file.name.lastIndexOf('.')) || file.name;
+  // Generate clean filename using the first file name or multi-image label
+  const firstFile = files[0];
+  const baseName =
+    files.length > 1
+      ? `${firstFile.name.substring(0, firstFile.name.lastIndexOf('.')) || firstFile.name}_merged`
+      : firstFile.name.substring(0, firstFile.name.lastIndexOf('.')) || firstFile.name;
   const convertedFileName = `${baseName}.pdf`;
   const convertedFile = new File([pdfBlob], convertedFileName, { type: 'application/pdf' });
 
   return {
     pdfBlob,
     pdfFile: convertedFile,
-    pageCount: 1,
+    pageCount: files.length,
   };
+}
+
+/**
+ * Converts a single image file (PNG, JPG, WEBP) to a standardized PDF Blob using pdf-lib.
+ * Retained for backwards compatibility, delegates to convertImagesToPdf.
+ */
+export async function convertImageToPdf(
+  file: File
+): Promise<{ pdfBlob: Blob; pdfFile: File; pageCount: number }> {
+  return convertImagesToPdf([file]);
 }
 
 /**
@@ -166,3 +228,4 @@ function convertImageBlobToPng(file: File): Promise<Blob> {
     img.src = objectUrl;
   });
 }
+

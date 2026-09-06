@@ -12,6 +12,7 @@ import {
   X,
   UploadCloud,
   FileCheck,
+  FileText,
   AlertCircle,
   Clock,
   Sparkles,
@@ -62,8 +63,10 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
     }
   }, [user?.semester, semester]);
 
-  const [file, setFile] = useState<File | null>(null);
+  const [files, setFiles] = useState<File[]>([]);
+  const [isMultiImage, setIsMultiImage] = useState(false);
   const [isImageFile, setIsImageFile] = useState(false);
+  const [isOfficeFile, setIsOfficeFile] = useState(false);
   const [fileError, setFileError] = useState<string | null>(null);
 
   const [isDragging, setIsDragging] = useState(false);
@@ -78,36 +81,68 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
 
   const requiresDeadline = type === 'Assignment' || type === 'Experiment';
 
-  const handleFileSelection = async (selectedFile: File) => {
+  const handleFilesSelection = async (selectedList: File[]) => {
     setFileError(null);
-    const validation = validateDocumentFile(selectedFile);
+    if (!selectedList || selectedList.length === 0) return;
 
-    if (!validation.valid) {
-      setFileError(validation.error || 'Invalid file.');
-      setFile(null);
-      setIsImageFile(false);
-      return;
+    // Validate each file
+    for (const f of selectedList) {
+      const validation = validateDocumentFile(f);
+      if (!validation.valid) {
+        setFileError(validation.error || `File "${f.name}" is invalid.`);
+        setFiles([]);
+        setIsImageFile(false);
+        setIsMultiImage(false);
+        setIsOfficeFile(false);
+        return;
+      }
     }
 
-    if (validation.isImage) {
-      setIsImageFile(true);
-      try {
-        const compressed = await compressImage(selectedFile, 1600, 1600, 0.85);
-        setFile(compressed);
-      } catch {
-        setFile(selectedFile);
+    const allImages = selectedList.every(
+      (f) => f.type.startsWith('image/') || /\.(jpg|jpeg|png|webp|gif|bmp)$/i.test(f.name)
+    );
+
+    if (selectedList.length > 1) {
+      if (!allImages) {
+        setFileError(
+          'Multiple file selection is only supported for combining images into a single PDF. For PDFs or Office files, please upload one at a time.'
+        );
+        setFiles([]);
+        setIsImageFile(false);
+        setIsMultiImage(false);
+        setIsOfficeFile(false);
+        return;
       }
+
+      setIsMultiImage(true);
+      setIsImageFile(true);
+      setIsOfficeFile(false);
+      setFiles(selectedList);
     } else {
-      setFile(selectedFile);
-      setIsImageFile(false);
+      const single = selectedList[0];
+      const validation = validateDocumentFile(single);
+      setIsMultiImage(false);
+      setIsImageFile(validation.isImage);
+      setIsOfficeFile(Boolean(validation.isOffice));
+
+      if (validation.isImage) {
+        try {
+          const compressed = await compressImage(single, 1600, 1600, 0.85);
+          setFiles([compressed]);
+        } catch {
+          setFiles([single]);
+        }
+      } else {
+        setFiles([single]);
+      }
     }
   };
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setIsDragging(false);
-    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      handleFileSelection(e.dataTransfer.files[0]);
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      handleFilesSelection(Array.from(e.dataTransfer.files));
     }
   };
 
@@ -120,8 +155,8 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
       return;
     }
 
-    if (!file) {
-      setGeneralError('Please select a PDF document or image to upload.');
+    if (files.length === 0) {
+      setGeneralError('Please select a PDF document, image(s), or Office file to upload.');
       return;
     }
 
@@ -145,7 +180,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
         semester,
         subject: subject.trim() || undefined,
         deadline: requiresDeadline && deadline ? new Date(deadline).toISOString() : null,
-        file,
+        files,
         onProgress: (status) => setProgressStatus(status),
       });
 
@@ -155,11 +190,12 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
         setIsSubmitting(false);
       } else {
         setUploadSuccess(true);
+        setIsSubmitting(false);
         showToast(`Document "${title.trim()}" published to hub!`, 'success');
         setTimeout(() => {
           onSuccess?.();
           handleClose();
-        }, 1200);
+        }, 800);
       }
     } catch (err) {
       setGeneralError(err instanceof Error ? err.message : 'An unexpected error occurred during upload.');
@@ -168,13 +204,16 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
   };
 
   const handleClose = () => {
-    if (isSubmitting) return;
+    if (isSubmitting && !uploadSuccess) return;
     setTitle('');
     setType('Notes');
     setSemester(user?.semester || '');
     setSubject('');
     setDeadline('');
-    setFile(null);
+    setFiles([]);
+    setIsImageFile(false);
+    setIsMultiImage(false);
+    setIsOfficeFile(false);
     setFileError(null);
     setGeneralError(null);
     setUploadSuccess(false);
@@ -357,7 +396,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
             {/* Dropzone File Upload */}
             <div>
               <label className="block text-xs font-semibold text-[#1C1D1F] mb-1">
-                Upload File (PDF or Image) *
+                Upload Document or Images *
               </label>
               
               <div
@@ -369,7 +408,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
                 onDrop={handleDrop}
                 onClick={() => fileInputRef.current?.click()}
                 className={`border-2 border-dashed rounded-2xl p-5 text-center cursor-pointer transition-all ${
-                  isDragging || file
+                  isDragging || files.length > 0
                     ? 'border-[#60B5FF] bg-[#60B5FF]/5'
                     : 'border-[#E8E8E3] hover:border-[#60B5FF] bg-[#FAFAF8]'
                 }`}
@@ -378,42 +417,83 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
                   ref={fileInputRef}
                   id="upload-file-input"
                   type="file"
-                  accept=".pdf,image/png,image/jpeg,image/webp"
+                  multiple
+                  accept=".pdf,image/png,image/jpeg,image/webp,.docx,.doc,.pptx,.ppt,.xlsx,.xls,.txt"
                   className="hidden"
                   onChange={(e) => {
-                    if (e.target.files && e.target.files[0]) {
-                      handleFileSelection(e.target.files[0]);
+                    if (e.target.files && e.target.files.length > 0) {
+                      handleFilesSelection(Array.from(e.target.files));
                     }
                   }}
                 />
 
-                {file ? (
+                {files.length > 1 ? (
+                  /* Multi-Image Selected Preview */
+                  <div className="flex flex-col items-center gap-2">
+                    <div className="w-11 h-11 rounded-full bg-[#5EF2D5]/20 text-[#1C1D1F] border border-[#5EF2D5] flex items-center justify-center">
+                      <FileCheck className="w-6 h-6 text-[#1C1D1F]" />
+                    </div>
+                    <div className="font-bold text-sm text-[#1C1D1F]">
+                      {files.length} Images Selected
+                    </div>
+                    <div className="text-[11px] text-[#60B5FF] font-semibold inline-flex items-center gap-1 bg-[#60B5FF]/10 px-2.5 py-1 rounded-full border border-[#60B5FF]/20">
+                      <Sparkles className="w-3.5 h-3.5 text-[#60B5FF]" />
+                      <span>Merges into 1 single PDF with {files.length} pages in exact order</span>
+                    </div>
+                    <div className="text-[11px] text-[#64666E] font-medium">
+                      Total size: {(files.reduce((sum, f) => sum + f.size, 0) / (1024 * 1024)).toFixed(2)} MB
+                    </div>
+                    {/* Ordered Page Preview List */}
+                    <div className="w-full max-h-32 overflow-y-auto mt-2 bg-[#FFFFFF] rounded-xl border border-[#E8E8E3] p-2 divide-y divide-[#E8E8E3] text-left text-xs">
+                      {files.map((f, idx) => (
+                        <div key={idx} className="py-1 px-1.5 flex items-center justify-between text-[#1C1D1F]">
+                          <span className="font-semibold text-[11px] text-[#60B5FF]">
+                            Page {idx + 1}:
+                          </span>
+                          <span className="truncate max-w-[200px] text-[11px] font-medium text-[#1C1D1F] ml-2 flex-1">
+                            {f.name}
+                          </span>
+                          <span className="text-[10px] text-[#64666E] ml-2">
+                            {(f.size / 1024).toFixed(0)} KB
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : files.length === 1 ? (
+                  /* Single File Selected Preview */
                   <div className="flex flex-col items-center gap-1.5">
                     <div className="w-10 h-10 rounded-full bg-[#60B5FF]/15 text-[#60B5FF] flex items-center justify-center">
                       <FileCheck className="w-5 h-5 text-[#60B5FF]" />
                     </div>
                     <div className="font-bold text-xs text-[#1C1D1F] truncate max-w-xs">
-                      {file.name}
+                      {files[0].name}
                     </div>
                     <div className="text-[11px] text-[#64666E] font-medium">
-                      {(file.size / (1024 * 1024)).toFixed(2)} MB
+                      {(files[0].size / (1024 * 1024)).toFixed(2)} MB
                       {isImageFile && (
                         <span className="ml-2 text-[#60B5FF] font-semibold inline-flex items-center gap-1">
                           <Sparkles className="w-3 h-3 text-[#60B5FF]" /> Auto-converts to PDF
                         </span>
                       )}
+                      {isOfficeFile && (
+                        <span className="ml-2 text-[#60B5FF] font-semibold inline-flex items-center gap-1">
+                          <FileText className="w-3 h-3 text-[#60B5FF]" /> Office Preview Enabled
+                        </span>
+                      )}
                     </div>
                   </div>
                 ) : (
+                  /* Empty State */
                   <div className="flex flex-col items-center gap-1.5">
                     <div className="w-10 h-10 rounded-full bg-[#FAFAF8] text-[#60B5FF] border border-[#E8E8E3] flex items-center justify-center">
                       <UploadCloud className="w-5 h-5 text-[#60B5FF]" />
                     </div>
                     <div className="text-xs font-semibold text-[#1C1D1F]">
-                      Drag and drop your file here, or <span className="text-[#60B5FF] underline">browse</span>
+                      Drag and drop your file(s) here, or <span className="text-[#60B5FF] underline">browse</span>
                     </div>
                     <div className="text-[11px] text-[#64666E] font-normal">
-                      PDF, JPG, PNG, WEBP (Max 20MB)
+                      PDF, DOCX, PPTX, XLSX, or multiple images (Max 20MB)
                     </div>
                   </div>
                 )}
@@ -447,7 +527,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
                   disabled={
                     isSubmitting ||
                     !title.trim() ||
-                    !file ||
+                    files.length === 0 ||
                     !semester ||
                     (requiresDeadline && !deadline)
                   }

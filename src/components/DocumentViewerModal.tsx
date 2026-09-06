@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { DocumentItem } from '@/types';
 import { useDocuments } from '@/context/DocumentContext';
 import { useToast } from '@/context/ToastContext';
@@ -8,16 +8,13 @@ import {
   X,
   Download,
   Share2,
-  ChevronLeft,
-  ChevronRight,
-  ZoomIn,
-  ZoomOut,
-  Maximize2,
+  ExternalLink,
   FileText,
-  Calendar,
   User,
   AlertCircle,
   Loader2,
+  Bookmark,
+  RefreshCw,
 } from 'lucide-react';
 
 interface DocumentViewerModalProps {
@@ -26,457 +23,321 @@ interface DocumentViewerModalProps {
   onClose: () => void;
 }
 
-// Load pdf.js dynamically from CDN
-function loadPdfJsFromCdn(): Promise<any> {
-  return new Promise((resolve, reject) => {
-    if (typeof window === 'undefined') {
-      return reject(new Error('Window not available'));
-    }
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    if ((window as any).pdfjsLib) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      return resolve((window as any).pdfjsLib);
-    }
-
-    const script = window.document.createElement('script');
-    script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
-    script.async = true;
-    script.onload = () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const lib = (window as any).pdfjsLib;
-      if (lib) {
-        lib.GlobalWorkerOptions.workerSrc =
-          'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-        resolve(lib);
-      } else {
-        reject(new Error('pdfjsLib not defined after script load'));
-      }
-    };
-    script.onerror = () => reject(new Error('Failed to load PDF viewer engine'));
-    window.document.head.appendChild(script);
-  });
-}
-
 export const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
   document: doc,
   initialPage = 1,
   onClose,
 }) => {
-  const { getDocumentPdfUrl } = useDocuments();
+  const { createDocumentSignedUrl } = useDocuments();
   const { showToast } = useToast();
-  const [pdfUrl, setPdfUrl] = useState<string | null>(null);
+
+  const [signedUrl, setSignedUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
+  const [iframeLoading, setIframeLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
+  const [iframeKey, setIframeKey] = useState<number>(0);
 
-  // PDF page state
-  const [currentPage, setCurrentPage] = useState<number>(initialPage);
-  const [numPages, setNumPages] = useState<number>(doc?.page_count || 1);
-  const [scale, setScale] = useState<number>(1.2);
-  const [renderingPage, setRenderingPage] = useState<boolean>(false);
-  const [useIframeFallback, setUseIframeFallback] = useState<boolean>(false);
-
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const pdfDocRef = useRef<any>(null);
-  const renderTaskRef = useRef<any>(null);
-  const touchStartX = useRef<number>(0);
-
-  const handleShareLink = () => {
-    if (!doc) return;
-    if (typeof window !== 'undefined') {
-      const shareUrl = `${window.location.origin}/?doc=${doc.id}&page=${currentPage}`;
-      navigator.clipboard.writeText(shareUrl);
-      showToast(`Link to Page ${currentPage} copied!`, 'success');
-    }
-  };
-
-  const handleTouchStart = (e: React.TouchEvent) => {
-    touchStartX.current = e.touches[0].clientX;
-  };
-
-  const handleTouchEnd = (e: React.TouchEvent) => {
-    const diffX = e.changedTouches[0].clientX - touchStartX.current;
-    if (diffX > 60) {
-      // swipe right -> previous page
-      setCurrentPage((p) => Math.max(1, p - 1));
-    } else if (diffX < -60) {
-      // swipe left -> next page
-      setCurrentPage((p) => Math.min(numPages, p + 1));
-    }
-  };
-
-  // Sync initialPage if it changes
+  // Generate short-lived signed URL whenever doc changes
   useEffect(() => {
-    if (initialPage && initialPage > 0) {
-      setCurrentPage(initialPage);
-    }
-  }, [initialPage]);
+    let isCancelled = false;
 
-  // Load document URL
-  useEffect(() => {
-    if (!doc) return;
+    async function prepareViewerUrl() {
+      if (!doc) return;
+      setLoading(true);
+      setIframeLoading(true);
+      setError(null);
 
-    let isMounted = true;
-    setLoading(true);
-    setError(null);
-
-    getDocumentPdfUrl(doc)
-      .then((url) => {
-        if (isMounted) {
-          setPdfUrl(url);
-        }
-      })
-      .catch((err) => {
-        if (isMounted) {
-          setError('Failed to load document: ' + (err?.message || 'Unknown error'));
+      try {
+        // Request short-lived signed URL for Google Docs Viewer
+        const url = await createDocumentSignedUrl(doc.file_path, 600);
+        if (!isCancelled) {
+          setSignedUrl(url);
           setLoading(false);
         }
-      });
-
-    return () => {
-      isMounted = false;
-    };
-  }, [doc, getDocumentPdfUrl]);
-
-  // Render PDF using pdfjs
-  const renderPage = useCallback(
-    async (pageNumber: number, pdfDocument: any) => {
-      if (!canvasRef.current || !pdfDocument) return;
-
-      try {
-        setRenderingPage(true);
-
-        if (renderTaskRef.current && typeof renderTaskRef.current.cancel === 'function') {
-          renderTaskRef.current.cancel();
-        }
-
-        const page = await pdfDocument.getPage(pageNumber);
-        const viewport = page.getViewport({ scale });
-        const canvas = canvasRef.current;
-        const context = canvas.getContext('2d');
-
-        if (!context) return;
-
-        const outputScale = window.devicePixelRatio || 1;
-        canvas.width = Math.floor(viewport.width * outputScale);
-        canvas.height = Math.floor(viewport.height * outputScale);
-        canvas.style.width = Math.floor(viewport.width) + 'px';
-        canvas.style.height = Math.floor(viewport.height) + 'px';
-
-        const transform = outputScale !== 1 ? [outputScale, 0, 0, outputScale, 0, 0] : null;
-
-        const renderContext = {
-          canvasContext: context,
-          transform: transform || undefined,
-          viewport: viewport,
-        };
-
-        const renderTask = page.render(renderContext);
-        renderTaskRef.current = renderTask;
-        await renderTask.promise;
-        setRenderingPage(false);
-      } catch (err: unknown) {
-        if ((err as { name?: string })?.name !== 'RenderingCancelledException') {
-          console.error('PDF Page render error:', err);
-        }
-        setRenderingPage(false);
-      }
-    },
-    [scale]
-  );
-
-  // Initialize PDF.js Document
-  useEffect(() => {
-    if (!pdfUrl) return;
-
-    let isMounted = true;
-
-    async function initPdf() {
-      try {
-        const pdfjsLib = await loadPdfJsFromCdn();
-        const loadingTask = pdfjsLib.getDocument(pdfUrl);
-        const loadedDoc = await loadingTask.promise;
-
-        if (!isMounted) return;
-
-        pdfDocRef.current = loadedDoc;
-        setNumPages(loadedDoc.numPages);
-        setLoading(false);
-
-        const targetPage = Math.min(Math.max(1, initialPage), loadedDoc.numPages);
-        setCurrentPage(targetPage);
-        renderPage(targetPage, loadedDoc);
-      } catch (err: unknown) {
-        console.warn('PDF.js canvas rendering failed, enabling preview fallback:', err);
-        if (isMounted) {
-          setUseIframeFallback(true);
+      } catch (err) {
+        if (!isCancelled) {
+          console.error('Failed to create signed URL for document:', err);
+          setError(
+            err instanceof Error
+              ? err.message
+              : 'Could not generate a secure access link for this document.'
+          );
           setLoading(false);
         }
       }
     }
 
-    initPdf();
+    prepareViewerUrl();
 
     return () => {
-      isMounted = false;
+      isCancelled = true;
     };
-  }, [pdfUrl, initialPage, renderPage]);
+  }, [doc, createDocumentSignedUrl]);
 
-  // Re-render when page or scale changes
-  useEffect(() => {
-    if (pdfDocRef.current) {
-      renderPage(currentPage, pdfDocRef.current);
-    }
-  }, [currentPage, scale, renderPage]);
-
-  // Keyboard navigation
+  // Handle keyboard shortcuts (Escape to close)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-      if (e.key === 'ArrowRight' || e.key === 'PageDown') {
-        setCurrentPage((p) => Math.min(numPages, p + 1));
-      }
-      if (e.key === 'ArrowLeft' || e.key === 'PageUp') {
-        setCurrentPage((p) => Math.max(1, p - 1));
+      if (e.key === 'Escape') {
+        onClose();
       }
     };
-
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [numPages, onClose]);
+  }, [onClose]);
 
-  const getTypeBadgeStyle = (type: string) => {
-    switch (type) {
-      case 'Notes':
-        return 'bg-[#FFE588] text-[#1C1D1F] border-[#FFE588]';
-      case 'Assignment':
-        return 'bg-[#F79D65] text-[#FFFFFF] border-[#F79D65]';
-      case 'Midsem Paper':
-        return 'bg-[#F79D65] text-[#FFFFFF] border-[#F79D65]';
-      case 'Experiment':
-        return 'bg-[#5EF2D5] text-[#1C1D1F] border-[#5EF2D5]';
-      case 'End-Sem Exam Paper':
-        return 'bg-[#F35252] text-[#FFFFFF] border-[#F35252]';
-      default:
-        return 'bg-[#FAFAF8] text-[#1C1D1F] border-[#E8E8E3]';
+  // Handle document download fallback
+  const handleDownload = useCallback(() => {
+    if (!signedUrl || !doc) {
+      showToast('Document link is still preparing, please wait...', 'info');
+      return;
     }
-  };
+    const a = window.document.createElement('a');
+    a.href = signedUrl;
+    a.download = doc.file_name || `${doc.title}.pdf`;
+    a.target = '_blank';
+    window.document.body.appendChild(a);
+    a.click();
+    window.document.body.removeChild(a);
+    showToast(`Downloading ${doc.file_name || doc.title}...`, 'success');
+  }, [signedUrl, doc, showToast]);
+
+  // Handle share link
+  const handleShare = useCallback(async () => {
+    if (!doc) return;
+    const shareUrl = `${window.location.origin}/?doc=${doc.id}`;
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: doc.title,
+          text: `Check out ${doc.title} on Campus Resource Hub`,
+          url: shareUrl,
+        });
+        return;
+      } catch {
+        // User cancelled or share failed, fallback to clipboard
+      }
+    }
+    navigator.clipboard.writeText(shareUrl);
+    showToast('Link copied to clipboard!', 'success');
+  }, [doc, showToast]);
 
   if (!doc) return null;
 
-  const isNonPdf = doc.file_type && !doc.file_type.includes('pdf');
-
-  // Direct download handler
-  const handleDownload = () => {
-    if (!pdfUrl) return;
-    const link = window.document.createElement('a');
-    link.href = pdfUrl;
-    link.download = doc.file_name || `${doc.title}.pdf`;
-    window.document.body.appendChild(link);
-    link.click();
-    window.document.body.removeChild(link);
-  };
+  const isBlobOrData = signedUrl ? signedUrl.startsWith('blob:') || signedUrl.startsWith('data:') : false;
+  // Use encodeURIComponent on signedUrl when embedding in Google Docs Viewer to preserve token and exp query params
+  const viewerUrl = signedUrl
+    ? isBlobOrData
+      ? signedUrl
+      : `https://docs.google.com/viewer?url=${encodeURIComponent(signedUrl)}&embedded=true`
+    : '';
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#1C1D1F]/60 backdrop-blur-xs p-2 sm:p-4 md:p-6 animate-in fade-in duration-200">
-      <div className="relative w-full max-w-5xl h-[92vh] bg-[#FFFFFF] rounded-2xl shadow-2xl border border-[#E8E8E3] flex flex-col overflow-hidden">
-        
-        {/* Top Header Bar */}
-        <div className="flex items-center justify-between px-4 sm:px-6 py-3 border-b border-[#E8E8E3] bg-[#FFFFFF] flex-shrink-0">
-          
-          <div className="flex items-center gap-3 overflow-hidden mr-4">
-            <div className="w-8 h-8 rounded-lg bg-[#FAFAF8] text-[#60B5FF] border border-[#E8E8E3] flex items-center justify-center flex-shrink-0">
-              <FileText className="w-4 h-4 text-[#60B5FF]" />
+    <div
+      className="fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4 md:p-6 animate-in fade-in duration-200"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div
+        className="bg-[#FFFFFF] border border-[#E8E8E3] rounded-2xl w-full max-w-6xl h-[92vh] flex flex-col shadow-2xl overflow-hidden animate-in zoom-in-95 duration-150"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Modal Header */}
+        <div className="flex items-center justify-between px-4 py-3 border-b border-[#E8E8E3] bg-[#FAFAF8] flex-shrink-0 gap-3">
+          <div className="flex items-center gap-2.5 min-w-0 flex-1">
+            <div className="w-8 h-8 rounded-xl bg-[#60B5FF]/10 text-[#60B5FF] flex items-center justify-center flex-shrink-0 border border-[#60B5FF]/20">
+              <FileText className="w-4 h-4" />
             </div>
-            <div className="truncate">
-              <div className="flex items-center gap-2">
-                <h3 className="text-sm sm:text-base font-bold text-[#1C1D1F] truncate">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <h3 className="font-bold text-sm text-[#1C1D1F] truncate" title={doc.title}>
                   {doc.title}
                 </h3>
-                <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${getTypeBadgeStyle(doc.type)}`}>
+                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-[#FAFAF8] text-[#60B5FF] border border-[#E8E8E3]">
                   {doc.type}
                 </span>
-                <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-[#FAFAF8] text-[#64666E] border border-[#E8E8E3]">
+                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-[#FAFAF8] text-[#64666E] border border-[#E8E8E3]">
                   {doc.semester}
                 </span>
+                {doc.page_count > 0 && (
+                  <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-slate-100 text-slate-700">
+                    {doc.page_count} {doc.page_count === 1 ? 'page' : 'pages'}
+                  </span>
+                )}
               </div>
-              <div className="flex items-center gap-3 text-xs text-[#64666E] mt-0.5">
-                <span className="flex items-center gap-1 font-medium">
-                  <User className="w-3 h-3 text-[#64666E]" />
-                  Uploaded by <strong className="text-[#1C1D1F] ml-0.5">{doc.uploader?.full_name || 'Student'}</strong>
-                </span>
-                <span>•</span>
-                <span className="flex items-center gap-1">
-                  <Calendar className="w-3 h-3 text-[#64666E]" />
-                  {new Date(doc.created_at).toLocaleDateString()}
-                </span>
+              <div className="flex items-center gap-2 text-[11px] text-[#64666E] mt-0.5">
+                {doc.uploader?.full_name && (
+                  <span className="flex items-center gap-1">
+                    <User className="w-3 h-3 text-[#64666E]" />
+                    <span>{doc.uploader.full_name}</span>
+                  </span>
+                )}
+                {doc.subject && (
+                  <>
+                    <span>•</span>
+                    <span className="font-medium">{doc.subject}</span>
+                  </>
+                )}
               </div>
             </div>
           </div>
 
-          {/* Action Tools */}
-          <div className="flex items-center gap-2 flex-shrink-0">
-            {/* Share / Copy Direct Link Button */}
-            <button
-              id="viewer-share-btn"
-              onClick={handleShareLink}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border border-[#E8E8E3] bg-[#FFFFFF] hover:bg-[#FAFAF8] text-[#1C1D1F] shadow-xs transition-all active:scale-95 cursor-pointer"
-              title="Copy Direct Link to this Document"
-            >
-              <Share2 className="w-3.5 h-3.5 text-[#64666E]" />
-              <span className="hidden sm:inline">Share</span>
-            </button>
-
-            {/* Download Button */}
+          {/* Action Toolbar */}
+          <div className="flex items-center gap-1.5 flex-shrink-0">
+            {/* Download Fallback Button */}
             <button
               id="viewer-download-btn"
+              type="button"
               onClick={handleDownload}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-[#60B5FF] hover:bg-[#4ea5ef] text-[#FFFFFF] shadow-xs transition-all active:scale-95 cursor-pointer"
+              title="Download original file"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-[#E8E8E3] bg-[#FFFFFF] hover:bg-[#FAFAF8] text-[#1C1D1F] text-xs font-bold transition-all shadow-xs cursor-pointer"
             >
-              <Download className="w-3.5 h-3.5" />
+              <Download className="w-3.5 h-3.5 text-[#60B5FF]" />
               <span className="hidden sm:inline">Download</span>
+            </button>
+
+            {/* Open in New Window */}
+            {signedUrl && (
+              <a
+                id="viewer-open-external-btn"
+                href={viewerUrl || signedUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                title="Open in new browser tab"
+                className="p-1.5 rounded-xl border border-[#E8E8E3] bg-[#FFFFFF] hover:bg-[#FAFAF8] text-[#64666E] hover:text-[#1C1D1F] transition-all cursor-pointer"
+              >
+                <ExternalLink className="w-4 h-4" />
+              </a>
+            )}
+
+            {/* Share Link */}
+            <button
+              id="viewer-share-btn"
+              type="button"
+              onClick={handleShare}
+              title="Share document link"
+              className="p-1.5 rounded-xl border border-[#E8E8E3] bg-[#FFFFFF] hover:bg-[#FAFAF8] text-[#64666E] hover:text-[#1C1D1F] transition-all cursor-pointer"
+            >
+              <Share2 className="w-4 h-4" />
             </button>
 
             {/* Close Button */}
             <button
               id="viewer-close-btn"
+              type="button"
               onClick={onClose}
-              className="p-1.5 rounded-xl text-[#64666E] hover:text-[#1C1D1F] hover:bg-[#FAFAF8] transition-colors cursor-pointer"
+              title="Close viewer (Esc)"
+              className="p-1.5 rounded-xl border border-[#E8E8E3] bg-[#FFFFFF] hover:bg-[#FAFAF8] text-[#64666E] hover:text-[#1C1D1F] transition-all cursor-pointer ml-1"
             >
-              <X className="w-5 h-5" />
+              <X className="w-4 h-4" />
             </button>
           </div>
         </div>
 
-        {/* Toolbar Controls (Page Nav & Zoom) */}
-        {!isNonPdf && !useIframeFallback && (
-          <div className="flex items-center justify-between px-4 py-2 border-b border-[#E8E8E3] bg-[#FAFAF8] text-xs text-[#1C1D1F] font-semibold flex-shrink-0">
-            {/* Page Navigation */}
+        {/* AI Match Context Callout (if opened at a specific page) */}
+        {initialPage > 1 && (
+          <div className="bg-sky-50 border-b border-sky-200 px-4 py-2 flex items-center justify-between gap-3 text-xs text-sky-900">
             <div className="flex items-center gap-2">
-              <button
-                id="viewer-prev-page-btn"
-                disabled={currentPage <= 1 || loading}
-                onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
-                className="p-1.5 rounded-lg border border-[#E8E8E3] bg-[#FFFFFF] hover:bg-[#FAFAF8] disabled:opacity-40 cursor-pointer text-[#1C1D1F]"
-                title="Previous Page"
-              >
-                <ChevronLeft className="w-4 h-4 text-[#1C1D1F]" />
-              </button>
-              <span className="font-mono text-xs font-bold text-[#1C1D1F]">
-                Page {currentPage} of {numPages}
+              <Bookmark className="w-4 h-4 text-sky-600 flex-shrink-0" />
+              <span className="font-semibold">
+                Match found on Page {initialPage}
               </span>
-              <button
-                id="viewer-next-page-btn"
-                disabled={currentPage >= numPages || loading}
-                onClick={() => setCurrentPage((p) => Math.min(numPages, p + 1))}
-                className="p-1.5 rounded-lg border border-[#E8E8E3] bg-[#FFFFFF] hover:bg-[#FAFAF8] disabled:opacity-40 cursor-pointer text-[#1C1D1F]"
-                title="Next Page"
-              >
-                <ChevronRight className="w-4 h-4 text-[#1C1D1F]" />
-              </button>
-            </div>
-
-            {/* Zoom Controls */}
-            <div className="flex items-center gap-1.5">
-              <button
-                id="viewer-zoom-out-btn"
-                onClick={() => setScale((s) => Math.max(0.6, s - 0.2))}
-                className="p-1.5 rounded-lg border border-[#E8E8E3] bg-[#FFFFFF] hover:bg-[#FAFAF8] cursor-pointer text-[#1C1D1F]"
-                title="Zoom Out"
-              >
-                <ZoomOut className="w-4 h-4 text-[#1C1D1F]" />
-              </button>
-              <span className="w-12 text-center font-mono text-[11px] font-bold text-[#1C1D1F]">
-                {Math.round(scale * 100)}%
+              <span className="text-sky-700 hidden sm:inline">
+                — Google Docs Viewer opens at page 1; please scroll to page {initialPage} below to view the match.
               </span>
-              <button
-                id="viewer-zoom-in-btn"
-                onClick={() => setScale((s) => Math.min(2.5, s + 0.2))}
-                className="p-1.5 rounded-lg border border-[#E8E8E3] bg-[#FFFFFF] hover:bg-[#FAFAF8] cursor-pointer text-[#1C1D1F]"
-                title="Zoom In"
-              >
-                <ZoomIn className="w-4 h-4 text-[#1C1D1F]" />
-              </button>
-              <button
-                id="viewer-fit-width-btn"
-                onClick={() => setScale(1.0)}
-                className="hidden sm:flex items-center gap-1 px-2 py-1 rounded-lg border border-[#E8E8E3] bg-[#FFFFFF] hover:bg-[#FAFAF8] cursor-pointer text-[11px] font-bold text-[#1C1D1F]"
-              >
-                <Maximize2 className="w-3 h-3 text-[#1C1D1F]" />
-                <span>Reset</span>
-              </button>
             </div>
+            <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-sky-200 text-sky-800">
+              Page {initialPage} of {doc.page_count || '?'}
+            </span>
           </div>
         )}
 
-        {/* Viewer Viewport (with touch swipe gesture support) */}
-        <div
-          onTouchStart={handleTouchStart}
-          onTouchEnd={handleTouchEnd}
-          className="flex-1 overflow-auto bg-[#FAFAF8] p-4 flex items-center justify-center relative touch-pan-y"
-        >
-          {loading ? (
-            <div className="flex flex-col items-center gap-3 text-[#60B5FF]">
-              <Loader2 className="w-8 h-8 animate-spin text-[#60B5FF]" />
-              <p className="text-xs font-bold text-[#1C1D1F]">Loading document viewer...</p>
-            </div>
-          ) : isNonPdf ? (
-            /* Non-PDF Fallback Card */
-            <div className="max-w-md w-full bg-[#FFFFFF] p-6 rounded-2xl border border-[#E8E8E3] text-center shadow-md">
-              <div className="w-14 h-14 mx-auto rounded-2xl bg-[#FAFAF8] text-[#60B5FF] border border-[#E8E8E3] flex items-center justify-center mb-4">
-                <FileText className="w-7 h-7 text-[#60B5FF]" />
-              </div>
-              <h4 className="text-base font-bold text-[#1C1D1F] mb-1">
-                {doc.file_name}
-              </h4>
-              <p className="text-xs text-[#64666E] mb-4 font-medium">
-                This document is in <strong>{doc.file_type || 'legacy'}</strong> format. Download to open in your native viewer.
-              </p>
+        {/* Fallback & Reliability Status Bar */}
+        <div className="bg-amber-50/70 border-b border-amber-200/60 px-4 py-1.5 flex items-center justify-between text-[11px] text-amber-900 gap-2 flex-wrap">
+          <div className="flex items-center gap-1.5">
+            <AlertCircle className="w-3.5 h-3.5 text-amber-600 flex-shrink-0" />
+            <span>
+              Preview powered by {isBlobOrData ? 'Integrated Viewer' : 'Google Docs Viewer'}. If loading is slow or fails, use the{' '}
               <button
+                type="button"
                 onClick={handleDownload}
-                className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl text-sm font-bold bg-[#60B5FF] hover:bg-[#4ea5ef] text-[#FFFFFF] shadow-xs transition-transform active:scale-95 cursor-pointer"
+                className="font-bold underline text-amber-950 hover:text-amber-800 cursor-pointer"
               >
-                <Download className="w-4 h-4" />
-                <span>Download Document</span>
-              </button>
-            </div>
-          ) : useIframeFallback && pdfUrl ? (
-            /* Native Browser PDF Embed Fallback */
-            <iframe
-              src={`${pdfUrl}#page=${currentPage}`}
-              className="w-full h-full rounded-lg border border-[#E8E8E3] bg-[#FFFFFF]"
-              title={doc.title}
-            />
-          ) : error ? (
-            /* Error Card */
-            <div className="max-w-md w-full bg-[#FFFFFF] p-6 rounded-2xl border border-[#F35252]/30 text-center shadow-md">
-              <AlertCircle className="w-10 h-10 text-[#F35252] mx-auto mb-3" />
-              <p className="text-xs text-[#F35252] mb-4 font-bold">{error}</p>
-              <button
-                onClick={handleDownload}
-                className="flex items-center justify-center gap-2 mx-auto py-2 px-4 rounded-xl text-xs font-bold bg-[#60B5FF] hover:bg-[#4ea5ef] text-[#FFFFFF] cursor-pointer"
-              >
-                <Download className="w-4 h-4" />
-                <span>Download File Directly</span>
-              </button>
-            </div>
-          ) : (
-            /* Canvas PDF Renderer */
-            <div className="relative shadow-md rounded-lg overflow-hidden bg-[#FFFFFF] border border-[#E8E8E3]">
-              {renderingPage && (
-                <div className="absolute inset-0 bg-[#FFFFFF]/70 backdrop-blur-xs flex items-center justify-center z-10">
-                  <Loader2 className="w-6 h-6 animate-spin text-[#60B5FF]" />
-                </div>
-              )}
-              <canvas ref={canvasRef} className="block mx-auto" />
-            </div>
-          )}
+                Download
+              </button>{' '}
+              button.
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setIframeKey((k) => k + 1)}
+            className="flex items-center gap-1 text-[11px] text-amber-800 hover:text-amber-950 font-bold cursor-pointer"
+            title="Reload preview"
+          >
+            <RefreshCw className="w-3 h-3" />
+            <span>Reload Preview</span>
+          </button>
         </div>
 
-        {/* Footer info */}
-        <div className="px-4 py-2 bg-[#FFFFFF] border-t border-[#E8E8E3] text-[11px] text-[#64666E] font-semibold flex items-center justify-between flex-shrink-0">
-          <span>Campus Document Hub • Verified Academic Stream</span>
-          <span>Size: {(doc.file_size / (1024 * 1024)).toFixed(2)} MB</span>
+        {/* Viewer Content Area */}
+        <div className="flex-1 relative bg-slate-100 overflow-hidden flex items-center justify-center">
+          {loading && (
+            <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-white gap-3">
+              <Loader2 className="w-8 h-8 text-[#60B5FF] animate-spin" />
+              <p className="text-xs font-bold text-[#64666E]">
+                Generating secure access link...
+              </p>
+            </div>
+          )}
+
+          {error && (
+            <div className="p-6 max-w-md text-center flex flex-col items-center gap-3">
+              <div className="w-12 h-12 rounded-full bg-red-100 text-red-600 flex items-center justify-center">
+                <AlertCircle className="w-6 h-6" />
+              </div>
+              <h4 className="font-bold text-sm text-[#1C1D1F]">Preview Unavailable</h4>
+              <p className="text-xs text-[#64666E]">{error}</p>
+              <button
+                type="button"
+                onClick={handleDownload}
+                className="mt-2 flex items-center gap-2 px-4 py-2 rounded-xl bg-[#60B5FF] text-white font-bold text-xs shadow-xs hover:bg-[#4ea5ef] transition-all cursor-pointer"
+              >
+                <Download className="w-4 h-4" />
+                <span>Download Document File</span>
+              </button>
+            </div>
+          )}
+
+          {!loading && !error && viewerUrl && (
+            <div className="w-full h-full relative">
+              {iframeLoading && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center bg-white/90 z-10 gap-2">
+                  <Loader2 className="w-7 h-7 text-[#60B5FF] animate-spin" />
+                  <p className="text-xs font-semibold text-[#64666E]">
+                    {isBlobOrData
+                      ? 'Loading document preview...'
+                      : 'Loading document in Google Docs Viewer...'}
+                  </p>
+                </div>
+              )}
+              <iframe
+                key={iframeKey}
+                id="google-docs-viewer-frame"
+                src={viewerUrl}
+                title={doc.title}
+                className="w-full h-full border-0"
+                onLoad={() => setIframeLoading(false)}
+                onError={() => {
+                  setIframeLoading(false);
+                  setError(
+                    isBlobOrData
+                      ? 'Unable to preview this file in browser. Please use the Download button.'
+                      : 'Google Docs Viewer was unable to embed this file. Please use the Download button.'
+                  );
+                }}
+              />
+            </div>
+          )}
         </div>
       </div>
     </div>
