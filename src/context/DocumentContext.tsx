@@ -45,6 +45,29 @@ const DocumentContext = createContext<DocumentContextType | undefined>(undefined
 // In-memory cache of signed document URLs
 const pdfBlobUrlCache = new Map<string, string>();
 
+// Helper function to clean up legacy test uploads with bad string IDs (doc_...)
+async function cleanupLegacyDocUploads(userId: string) {
+  if (!isSupabaseConfigured || !supabase || !userId) return;
+  try {
+    const { data: files, error } = await supabase.storage
+      .from('documents')
+      .list(userId);
+
+    if (!error && files && files.length > 0) {
+      const badFiles = files
+        .filter((f) => f.name.startsWith('doc_'))
+        .map((f) => `${userId}/${f.name}`);
+
+      if (badFiles.length > 0) {
+        console.log('[Storage Cleanup] Removing legacy test files:', badFiles);
+        await supabase.storage.from('documents').remove(badFiles);
+      }
+    }
+  } catch (cleanErr) {
+    console.warn('[Storage Cleanup] Non-blocking cleanup error:', cleanErr);
+  }
+}
+
 export const DocumentProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { user } = useAuth();
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
@@ -103,6 +126,13 @@ export const DocumentProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   useEffect(() => {
     loadData();
   }, [loadData]);
+
+  // Clean up any legacy test uploads that used invalid 'doc_...' string IDs in storage
+  useEffect(() => {
+    if (user?.id) {
+      cleanupLegacyDocUploads(user.id);
+    }
+  }, [user?.id]);
 
   // Filter and sort documents
   const filteredAndSortedDocuments = useMemo(() => {
@@ -232,12 +262,12 @@ export const DocumentProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           }
         }
 
-        const docId = `doc_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
         const cleanFileName = isConverted
           ? `${file.name.replace(/\.[^/.]+$/, '')}.pdf`
           : file.name;
         const fileExt = isConverted ? 'pdf' : (file.name.split('.').pop() || 'pdf');
-        const storagePath = `${user.id}/${docId}.${fileExt}`;
+        // Storage path uses timestamp (independent of the future Postgres-generated UUID)
+        const storagePath = `${user.id}/${Date.now()}.${fileExt}`;
 
         onProgress?.('Uploading document to secure storage...');
         const { error: uploadError } = await supabase.storage
@@ -253,10 +283,11 @@ export const DocumentProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         }
 
         onProgress?.('Indexing document metadata and subject tags...');
+        // Insert document row with the real file_path already populated.
+        // The 'id' column is omitted so Postgres auto-generates a valid UUID via DEFAULT gen_random_uuid()
         const { data: insertedDoc, error: insertError } = await supabase
           .from('documents')
           .insert({
-            id: docId,
             title: title.trim(),
             type,
             semester,
@@ -276,21 +307,30 @@ export const DocumentProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           .single();
 
         if (insertError || !insertedDoc) {
+          console.error('Database insert failed, rolling back uploaded storage file:', insertError);
+          // Delete uploaded storage object so no orphaned file is left
+          await supabase.storage.from('documents').remove([storagePath]);
           return { success: false, error: `Database insert failed: ${insertError?.message}` };
         }
 
-        // Insert initial page text for AI Assistant indexing
+        // Insert initial page text for AI Assistant indexing using the Postgres-generated UUID
         const newPageRow = {
           document_id: insertedDoc.id,
           page_number: 1,
           content: `${title}. Course: ${subject || 'General BTech'}. Category: ${type}, ${semester}. Uploaded by ${user.full_name}.`,
         };
-        await supabase.from('document_pages').insert(newPageRow);
+        const { error: pageError } = await supabase.from('document_pages').insert(newPageRow);
+        if (pageError) {
+          console.warn('Warning: Failed to index initial document page:', pageError);
+        }
 
         // Update local state
         const formattedDoc = insertedDoc as DocumentItem;
         setDocuments((prev) => [formattedDoc, ...prev]);
         setPages((prev) => [...prev, newPageRow as DocumentPage]);
+
+        // Cleanup any legacy doc_... orphaned test uploads in the background
+        cleanupLegacyDocUploads(user.id);
 
         return { success: true, documentId: insertedDoc.id };
       } catch (err) {
