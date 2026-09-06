@@ -1,4 +1,4 @@
-import { createClient } from '@supabase/supabase-js';
+import { createBrowserClient } from '@supabase/ssr';
 
 const DEFAULT_SUPABASE_URL = 'https://blkmyaqmonpilrdnaeji.supabase.co';
 const DEFAULT_SUPABASE_KEY = 'sb_publishable_8oAmr8-V6X5JTNbg-PlNVg_Z24Pr41P';
@@ -19,10 +19,11 @@ export const isSupabaseConfigured = Boolean(
   !supabaseAnonKey.includes('your-supabase-anon-key')
 );
 
-// Returns Supabase client if configured, otherwise null
+// Returns Supabase client configured with cookie storage and PKCE auth flow for SSR
 export const supabase = isSupabaseConfigured
-  ? createClient(supabaseUrl, supabaseAnonKey, {
+  ? createBrowserClient(supabaseUrl, supabaseAnonKey, {
       auth: {
+        flowType: 'pkce',
         persistSession: true,
         autoRefreshToken: true,
       },
