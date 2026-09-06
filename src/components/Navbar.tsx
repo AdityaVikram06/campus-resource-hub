@@ -106,7 +106,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenUpload, onOpenAI }) => {
                       {user.full_name.split(' ')[0]}
                     </div>
                     <div className="text-[10px] text-[#64666E]">
-                      {user.semester} • {user.year}
+                      {(user.semester && user.year) ? `${user.semester} • ${user.year}` : (user.semester || user.year || 'Student')}
                     </div>
                   </div>
                   <ChevronDown className="w-3.5 h-3.5 text-[#64666E]" />
@@ -125,11 +125,11 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenUpload, onOpenAI }) => {
                           {user.full_name}
                         </p>
                         <p className="text-[11px] text-[#64666E] truncate">
-                          {user.department}
+                          {user.department || 'Department not set'}
                         </p>
                         <div className="mt-1 flex items-center gap-1.5">
                           <span className="text-[10px] font-semibold px-2 py-0.5 rounded bg-[#FAFAF8] text-[#64666E] border border-[#E8E8E3]">
-                            {user.year} ({user.semester})
+                            {user.year || 'Year not set'}{user.semester ? ` • ${user.semester}` : ''}
                           </span>
                         </div>
                       </div>
@@ -211,8 +211,10 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenUpload, onOpenAI }) => {
               </div>
               <div className="flex-1 min-w-0">
                 <div className="text-xs font-bold text-[#1C1D1F] truncate">{user.full_name}</div>
-                <div className="text-[11px] text-[#64666E] truncate">{user.department}</div>
-                <div className="text-[10px] font-bold text-[#60B5FF]">{user.year} • {user.semester}</div>
+                <div className="text-[11px] text-[#64666E] truncate">{user.department || 'Department not set'}</div>
+                <div className="text-[10px] font-bold text-[#60B5FF]">
+                  {(user.year && user.semester) ? `${user.year} • ${user.semester}` : (user.year || user.semester || 'Student Profile')}
+                </div>
               </div>
             </div>
           )}

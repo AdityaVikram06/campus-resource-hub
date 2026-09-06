@@ -1,8 +1,10 @@
 'use client';
 
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
+import Link from 'next/link';
 import { DocumentType, Semester } from '@/types';
 import { useDocuments } from '@/context/DocumentContext';
+import { useAuth } from '@/context/AuthContext';
 import { validateDocumentFile } from '@/lib/pdfConverter';
 import { compressImage } from '@/lib/imageCompressor';
 import { useToast } from '@/context/ToastContext';
@@ -44,13 +46,21 @@ const SEMESTERS: Semester[] = [
 
 export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuccess }) => {
   const { uploadDocument } = useDocuments();
+  const { user } = useAuth();
   const { showToast } = useToast();
 
   const [title, setTitle] = useState('');
   const [type, setType] = useState<DocumentType>('Notes');
-  const [semester, setSemester] = useState<Semester>('Sem 5');
+  const [semester, setSemester] = useState<Semester | ''>(user?.semester || '');
   const [subject, setSubject] = useState('');
   const [deadline, setDeadline] = useState('');
+
+  // Keep semester synced with user profile if it loads later
+  useEffect(() => {
+    if (user?.semester && !semester) {
+      setSemester(user.semester);
+    }
+  }, [user?.semester, semester]);
 
   const [file, setFile] = useState<File | null>(null);
   const [isImageFile, setIsImageFile] = useState(false);
@@ -115,6 +125,11 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
       return;
     }
 
+    if (!semester) {
+      setGeneralError('Please select a semester. Documents cannot be uploaded without a valid semester.');
+      return;
+    }
+
     if (requiresDeadline && !deadline) {
       setGeneralError(`Please specify the submission deadline for this ${type}.`);
       return;
@@ -156,7 +171,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
     if (isSubmitting) return;
     setTitle('');
     setType('Notes');
-    setSemester('Sem 5');
+    setSemester(user?.semester || '');
     setSubject('');
     setDeadline('');
     setFile(null);
@@ -219,6 +234,22 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
               </div>
             )}
 
+            {/* Informational Tip if Semester is Missing from Profile */}
+            {!user?.semester && (
+              <div className="p-3 rounded-2xl bg-[#FFE588]/30 border border-[#FFE588] flex items-start gap-2.5 text-xs text-[#1C1D1F]">
+                <Sparkles className="w-4 h-4 flex-shrink-0 mt-0.5 text-[#F79D65]" />
+                <div>
+                  <p className="font-bold">Semester not configured in your student profile</p>
+                  <p className="text-[11px] text-[#64666E] mt-0.5">
+                    Please select the correct semester for this document below. To pre-fill automatically on future uploads,{' '}
+                    <Link href="/profile" className="text-[#60B5FF] font-bold underline hover:text-[#4ea5ef]">
+                      complete your profile
+                    </Link>.
+                  </p>
+                </div>
+              </div>
+            )}
+
             {/* Document Title */}
             <div>
               <label htmlFor="upload-title" className="block text-xs font-semibold text-[#1C1D1F] mb-1">
@@ -261,16 +292,27 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
                 </label>
                 <select
                   id="upload-semester"
+                  required
                   value={semester}
                   onChange={(e) => setSemester(e.target.value as Semester)}
-                  className="w-full px-3.5 py-2.5 rounded-xl border border-[#E8E8E3] bg-[#FFFFFF] text-[#1C1D1F] font-semibold text-sm focus:outline-none focus:border-[#60B5FF] focus:ring-2 focus:ring-[#60B5FF]/20 transition-all"
+                  className={`w-full px-3.5 py-2.5 rounded-xl border bg-[#FFFFFF] text-sm font-semibold focus:outline-none focus:border-[#60B5FF] focus:ring-2 focus:ring-[#60B5FF]/20 transition-all cursor-pointer ${
+                    !semester ? 'border-[#F79D65] text-[#64666E]' : 'border-[#E8E8E3] text-[#1C1D1F]'
+                  }`}
                 >
+                  <option value="" disabled>
+                    Select Semester (Required) *
+                  </option>
                   {SEMESTERS.map((s) => (
                     <option key={s} value={s}>
                       {s}
                     </option>
                   ))}
                 </select>
+                {!semester && (
+                  <p className="text-[11px] text-[#F79D65] mt-1 font-semibold">
+                    * Semester selection is mandatory.
+                  </p>
+                )}
               </div>
             </div>
 
@@ -402,7 +444,14 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
                 <button
                   id="upload-submit-btn"
                   type="submit"
-                  className="w-full py-3 px-4 rounded-xl text-sm font-bold bg-[#60B5FF] hover:bg-[#60B5FF]/90 text-[#FFFFFF] shadow-xs active:scale-95 transition-all cursor-pointer"
+                  disabled={
+                    isSubmitting ||
+                    !title.trim() ||
+                    !file ||
+                    !semester ||
+                    (requiresDeadline && !deadline)
+                  }
+                  className="w-full py-3 px-4 rounded-xl text-sm font-bold bg-[#60B5FF] hover:bg-[#60B5FF]/90 text-[#FFFFFF] shadow-xs active:scale-95 transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-[#60B5FF]"
                 >
                   Upload & Index Document
                 </button>

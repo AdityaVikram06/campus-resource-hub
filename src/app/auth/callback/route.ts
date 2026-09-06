@@ -38,16 +38,19 @@ export async function GET(request: NextRequest) {
           httpOnly: false,
         });
 
-        // Ensure a profile row exists in case trigger was not executed in Supabase SQL editor
+        // Check if user has completed academic onboarding
         const user = data.session.user;
+        let needsOnboarding = false;
+
         try {
-          const { data: existingProfile } = await supabase
+          const { data: profile } = await supabase
             .from('profiles')
-            .select('id')
+            .select('id, full_name, year, semester, department, avatar_url')
             .eq('id', user.id)
             .single();
 
-          if (!existingProfile) {
+          if (!profile) {
+            needsOnboarding = true;
             const fullName =
               user.user_metadata?.full_name ||
               user.user_metadata?.name ||
@@ -61,18 +64,36 @@ export async function GET(request: NextRequest) {
             await supabase.from('profiles').upsert({
               id: user.id,
               full_name: fullName,
-              year: user.user_metadata?.year || null,
-              semester: user.user_metadata?.semester || null,
-              department: user.user_metadata?.department || null,
+              year: null,
+              semester: null,
+              department: null,
               avatar_url: avatarUrl,
               created_at: new Date().toISOString(),
               updated_at: new Date().toISOString(),
             });
+          } else if (!profile.year || !profile.semester || !profile.department) {
+            needsOnboarding = true;
           }
         } catch (profileErr) {
           console.error('Error verifying/creating OAuth profile:', profileErr);
+          needsOnboarding = true;
         }
 
+        if (needsOnboarding) {
+          // Brand-new Google signup or missing academic fields: route to onboarding form
+          const onboardingResponse = NextResponse.redirect(new URL('/onboarding', origin));
+          response.cookies.getAll().forEach((c) => {
+            onboardingResponse.cookies.set(c.name, c.value, {
+              path: '/',
+              maxAge: 604800,
+              sameSite: 'lax',
+              httpOnly: false,
+            });
+          });
+          return onboardingResponse;
+        }
+
+        // Returning user with completed profile: skip straight to dashboard
         return response;
       } else if (error) {
         console.error('OAuth exchange error:', error);

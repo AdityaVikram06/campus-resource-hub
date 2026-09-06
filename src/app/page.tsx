@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, Suspense } from 'react';
+import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { useDocuments } from '@/context/DocumentContext';
 import { DocumentItem, DocumentType, Semester, SortOption } from '@/types';
@@ -24,6 +25,7 @@ import {
   Loader2,
   AlertCircle,
   UploadCloud,
+  ArrowRight,
 } from 'lucide-react';
 
 const TYPE_PILLS: (DocumentType | 'All')[] = [
@@ -68,7 +70,7 @@ function DashboardContent() {
     paginatedDocuments,
   } = useDocuments();
 
-  const { needsAcademicDetails, isSupabaseConnected } = useAuth();
+  const { user, needsAcademicDetails, isSupabaseConnected } = useAuth();
 
   // Modals state
   const [isUploadOpen, setIsUploadOpen] = useState(false);
@@ -76,6 +78,7 @@ function DashboardContent() {
   const [viewerDoc, setViewerDoc] = useState<DocumentItem | null>(null);
   const [viewerInitialPage, setViewerInitialPage] = useState<number>(1);
   const [viewMode, setViewMode] = useState<'grid' | 'table'>('grid');
+  const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
 
   // Deep-link check: open document viewer if ?doc=<id> is in URL
   useEffect(() => {
@@ -215,6 +218,34 @@ function DashboardContent() {
       {/* Main Content Area */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
         
+        {/* Incomplete Academic Profile Banner */}
+        {user && needsAcademicDetails && (
+          <div className="bg-[#FFE588]/30 border border-[#FFE588] rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-[#1C1D1F] animate-in fade-in duration-200">
+            <div className="flex items-start sm:items-center gap-3">
+              <div className="w-8 h-8 rounded-xl bg-[#FFE588] text-[#1C1D1F] flex items-center justify-center flex-shrink-0 shadow-xs">
+                <Sparkles className="w-4 h-4 text-[#F79D65]" />
+              </div>
+              <div>
+                <h4 className="font-bold text-xs text-[#1C1D1F]">
+                  Your academic profile is incomplete
+                </h4>
+                <p className="text-[11px] text-[#64666E] mt-0.5">
+                  Please set your engineering branch, academic year, and semester to personalize your study archive and course downloads.
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 self-start sm:self-auto flex-shrink-0">
+              <button
+                onClick={() => setIsProfileModalOpen(true)}
+                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold bg-[#60B5FF] hover:bg-[#4ea5ef] text-[#FFFFFF] transition-colors shadow-xs cursor-pointer"
+              >
+                <span>Set Academic Details</span>
+                <ArrowRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Database Configuration Error Banner */}
         {!isSupabaseConnected && (
           <div className="bg-[#F35252]/10 border border-[#F35252]/30 rounded-2xl p-4 flex items-start gap-3 text-xs text-[#F35252]">
@@ -514,7 +545,8 @@ function DashboardContent() {
 
       {/* Google OAuth New User Academic Profile Setup Modal */}
       <CompleteProfileModal
-        isOpen={needsAcademicDetails}
+        isOpen={isProfileModalOpen}
+        onClose={() => setIsProfileModalOpen(false)}
       />
     </div>
   );

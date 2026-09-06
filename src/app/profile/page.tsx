@@ -270,7 +270,7 @@ export default function ProfilePage() {
                   </h1>
                   <p className="text-xs text-[#64666E] font-semibold flex items-center justify-center sm:justify-start gap-1.5 mt-0.5">
                     <Building className="w-3.5 h-3.5 text-[#60B5FF]" />
-                    <span>{user.department}</span>
+                    <span>{user.department || 'Department not set'}</span>
                   </p>
                 </div>
 
@@ -282,12 +282,13 @@ export default function ProfilePage() {
                     {user.semester || 'Semester not set'}
                   </span>
                   <button
+                    id="profile-edit-btn"
                     onClick={() => setIsEditAcademicOpen(true)}
-                    className="flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold border border-[#E8E8E3] bg-[#FFFFFF] hover:bg-[#FAFAF8] text-[#1C1D1F] transition-colors cursor-pointer shadow-xs"
-                    title="Edit Academic Year, Semester, and Branch"
+                    className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold border border-[#60B5FF]/30 bg-[#60B5FF]/10 hover:bg-[#60B5FF]/20 text-[#1C1D1F] transition-colors cursor-pointer shadow-xs"
+                    title="Edit Name, Department, Year, Semester, and Avatar"
                   >
-                    <Edit3 className="w-3 h-3 text-[#60B5FF]" />
-                    <span>{user.year ? 'Edit Details' : 'Set Academic Details'}</span>
+                    <Edit3 className="w-3.5 h-3.5 text-[#60B5FF]" />
+                    <span>Edit Profile</span>
                   </button>
                 </div>
               </div>
