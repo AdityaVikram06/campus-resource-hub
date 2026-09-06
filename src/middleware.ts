@@ -4,10 +4,20 @@ import { createServerClient } from '@supabase/ssr';
 export async function middleware(request: NextRequest) {
   const { pathname, search } = request.nextUrl;
 
-  // Static files and internal Next.js assets are always public
+  // Redirect /login or /signin aliases directly to /auth
+  if (pathname === '/login' || pathname === '/signin') {
+    const signInUrl = new URL('/auth', request.url);
+    if (search) {
+      signInUrl.search = search;
+    }
+    return NextResponse.redirect(signInUrl);
+  }
+
+  // Static files, OAuth callbacks, and internal Next.js assets are always public
   if (
     pathname.startsWith('/_next') ||
     pathname.startsWith('/api/auth') ||
+    pathname.startsWith('/auth/callback') ||
     pathname === '/favicon.ico' ||
     pathname === '/favicon.svg' ||
     pathname.match(/\.(svg|png|jpg|jpeg|gif|webp|ico|woff2?)$/)
@@ -82,7 +92,7 @@ export async function middleware(request: NextRequest) {
     }
   }
 
-  const isAuthRoute = pathname.startsWith('/auth');
+  const isAuthRoute = pathname.startsWith('/auth') && !pathname.startsWith('/auth/callback');
 
   // If user is already authenticated and visits /auth, redirect to dashboard
   if (isAuthenticated && isAuthRoute) {

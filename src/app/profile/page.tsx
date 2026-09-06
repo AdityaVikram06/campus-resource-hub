@@ -12,6 +12,7 @@ import { DocumentViewerModal } from '@/components/DocumentViewerModal';
 import { UploadModal } from '@/components/UploadModal';
 import { AIAssistantModal } from '@/components/AIAssistantModal';
 import { DocumentCard } from '@/components/DocumentCard';
+import { CompleteProfileModal } from '@/components/CompleteProfileModal';
 import {
   User,
   Building,
@@ -27,6 +28,7 @@ import {
   AlertCircle,
   Loader2,
   ArrowLeft,
+  Edit3,
 } from 'lucide-react';
 
 const TYPE_CARDS: {
@@ -92,7 +94,7 @@ const TYPE_CARDS: {
 ];
 
 export default function ProfilePage() {
-  const { user, updateProfile } = useAuth();
+  const { user, updateProfile, needsAcademicDetails } = useAuth();
   const { documents } = useDocuments();
   const { showToast } = useToast();
 
@@ -100,6 +102,7 @@ export default function ProfilePage() {
   const [viewerDoc, setViewerDoc] = useState<DocumentItem | null>(null);
   const [isUploadOpen, setIsUploadOpen] = useState(false);
   const [isAIOpen, setIsAIOpen] = useState(false);
+  const [isEditAcademicOpen, setIsEditAcademicOpen] = useState(false);
 
   // Avatar update state
   const [isUpdatingAvatar, setIsUpdatingAvatar] = useState(false);
@@ -271,13 +274,21 @@ export default function ProfilePage() {
                   </p>
                 </div>
 
-                <div className="flex items-center justify-center sm:justify-end gap-2">
+                <div className="flex flex-wrap items-center justify-center sm:justify-end gap-2">
                   <span className="px-3 py-1 rounded-full bg-[#FAFAF8] text-[#64666E] text-xs font-bold border border-[#E8E8E3]">
-                    {user.year}
+                    {user.year || 'Year not set'}
                   </span>
                   <span className="px-3 py-1 rounded-full bg-[#FAFAF8] text-[#64666E] text-xs font-bold border border-[#E8E8E3]">
-                    {user.semester}
+                    {user.semester || 'Semester not set'}
                   </span>
+                  <button
+                    onClick={() => setIsEditAcademicOpen(true)}
+                    className="flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold border border-[#E8E8E3] bg-[#FFFFFF] hover:bg-[#FAFAF8] text-[#1C1D1F] transition-colors cursor-pointer shadow-xs"
+                    title="Edit Academic Year, Semester, and Branch"
+                  >
+                    <Edit3 className="w-3 h-3 text-[#60B5FF]" />
+                    <span>{user.year ? 'Edit Details' : 'Set Academic Details'}</span>
+                  </button>
                 </div>
               </div>
 
@@ -415,6 +426,12 @@ export default function ProfilePage() {
           onClose={() => setViewerDoc(null)}
         />
       )}
+
+      {/* Complete/Edit Academic Profile Modal */}
+      <CompleteProfileModal
+        isOpen={needsAcademicDetails || isEditAcademicOpen}
+        onClose={() => setIsEditAcademicOpen(false)}
+      />
     </div>
   );
 }

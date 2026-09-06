@@ -9,7 +9,9 @@ import { Pagination } from '@/components/Pagination';
 import { UploadModal } from '@/components/UploadModal';
 import { DocumentViewerModal } from '@/components/DocumentViewerModal';
 import { AIAssistantModal } from '@/components/AIAssistantModal';
+import { CompleteProfileModal } from '@/components/CompleteProfileModal';
 import { Navbar } from '@/components/Navbar';
+import { useAuth } from '@/context/AuthContext';
 import {
   Search,
   Filter,
@@ -63,6 +65,8 @@ function DashboardContent() {
     totalFilteredCount,
     paginatedDocuments,
   } = useDocuments();
+
+  const { needsAcademicDetails } = useAuth();
 
   // Modals state
   const [isUploadOpen, setIsUploadOpen] = useState(false);
@@ -471,6 +475,11 @@ function DashboardContent() {
           onClose={handleCloseViewer}
         />
       )}
+
+      {/* Google OAuth New User Academic Profile Setup Modal */}
+      <CompleteProfileModal
+        isOpen={needsAcademicDetails}
+      />
     </div>
   );
 }

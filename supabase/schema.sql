@@ -10,13 +10,18 @@ CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 CREATE TABLE IF NOT EXISTS public.profiles (
     id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
     full_name TEXT NOT NULL,
-    year TEXT NOT NULL CHECK (year IN ('1st Year', '2nd Year', '3rd Year', '4th Year')),
-    semester TEXT NOT NULL CHECK (semester IN ('Sem 1', 'Sem 2', 'Sem 3', 'Sem 4', 'Sem 5', 'Sem 6', 'Sem 7', 'Sem 8')),
-    department TEXT NOT NULL,
+    year TEXT CHECK (year IS NULL OR year IN ('1st Year', '2nd Year', '3rd Year', '4th Year')),
+    semester TEXT CHECK (semester IS NULL OR semester IN ('Sem 1', 'Sem 2', 'Sem 3', 'Sem 4', 'Sem 5', 'Sem 6', 'Sem 7', 'Sem 8')),
+    department TEXT,
     avatar_url TEXT,
     created_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL,
     updated_at TIMESTAMPTZ DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
 );
+
+-- Migration helpers for existing databases
+ALTER TABLE public.profiles ALTER COLUMN year DROP NOT NULL;
+ALTER TABLE public.profiles ALTER COLUMN semester DROP NOT NULL;
+ALTER TABLE public.profiles ALTER COLUMN department DROP NOT NULL;
 
 -- Index for profiles
 CREATE INDEX IF NOT EXISTS idx_profiles_department ON public.profiles(department);
@@ -63,7 +68,7 @@ CREATE INDEX IF NOT EXISTS idx_doc_pages_page_num ON public.document_pages(docum
 CREATE INDEX IF NOT EXISTS idx_doc_pages_fts ON public.document_pages USING gin(to_tsvector('english', content));
 CREATE INDEX IF NOT EXISTS idx_documents_fts ON public.documents USING gin(to_tsvector('english', title || ' ' || COALESCE(subject, '')));
 
--- 5. TRIGGER FOR NEW AUTH USERS (Automatically creates profile row upon signup)
+-- 5. TRIGGER FOR NEW AUTH USERS (Automatically creates profile row upon signup or OAuth)
 CREATE OR REPLACE FUNCTION public.handle_new_user()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -77,14 +82,23 @@ BEGIN
     )
     VALUES (
         NEW.id,
-        COALESCE(NEW.raw_user_meta_data->>'full_name', 'Student User'),
-        COALESCE(NEW.raw_user_meta_data->>'year', '1st Year'),
-        COALESCE(NEW.raw_user_meta_data->>'semester', 'Sem 1'),
-        COALESCE(NEW.raw_user_meta_data->>'department', 'Computer Science & Engineering'),
-        NEW.raw_user_meta_data->>'avatar_url'
+        COALESCE(
+            NULLIF(TRIM(NEW.raw_user_meta_data->>'full_name'), ''),
+            NULLIF(TRIM(NEW.raw_user_meta_data->>'name'), ''),
+            split_part(NEW.email, '@', 1),
+            'Student User'
+        ),
+        NULLIF(TRIM(NEW.raw_user_meta_data->>'year'), ''),
+        NULLIF(TRIM(NEW.raw_user_meta_data->>'semester'), ''),
+        NULLIF(TRIM(NEW.raw_user_meta_data->>'department'), ''),
+        COALESCE(
+            NULLIF(TRIM(NEW.raw_user_meta_data->>'avatar_url'), ''),
+            NULLIF(TRIM(NEW.raw_user_meta_data->>'picture'), '')
+        )
     )
     ON CONFLICT (id) DO UPDATE SET
-        full_name = EXCLUDED.full_name,
+        full_name = COALESCE(NULLIF(EXCLUDED.full_name, ''), profiles.full_name),
+        avatar_url = COALESCE(NULLIF(EXCLUDED.avatar_url, ''), profiles.avatar_url),
         updated_at = NOW();
     RETURN NEW;
 END;

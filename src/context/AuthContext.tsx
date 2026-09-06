@@ -9,6 +9,7 @@ interface AuthContextType {
   user: Profile | null;
   isLoading: boolean;
   isSupabaseConnected: boolean;
+  needsAcademicDetails: boolean;
   login: (email: string, password: string) => Promise<{ error?: string }>;
   signup: (params: {
     email: string;
@@ -71,17 +72,30 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             if (profile) {
               setUser(profile as Profile);
             } else {
-              // Fallback user from session metadata
-              setUser({
+              // Ensure profile exists for Google OAuth or metadata user
+              const fallbackName =
+                session.user.user_metadata?.full_name ||
+                session.user.user_metadata?.name ||
+                session.user.email?.split('@')[0] ||
+                'Student User';
+              const fallbackAvatar =
+                session.user.user_metadata?.avatar_url ||
+                session.user.user_metadata?.picture ||
+                null;
+
+              const newProfile: Profile = {
                 id: session.user.id,
-                full_name: session.user.user_metadata?.full_name || 'BTech Student',
-                year: (session.user.user_metadata?.year as Year) || '3rd Year',
-                semester: (session.user.user_metadata?.semester as Semester) || 'Sem 5',
-                department: session.user.user_metadata?.department || 'Computer Science & Engineering',
-                avatar_url: session.user.user_metadata?.avatar_url || null,
+                full_name: fallbackName,
+                year: (session.user.user_metadata?.year as Year) || null,
+                semester: (session.user.user_metadata?.semester as Semester) || null,
+                department: session.user.user_metadata?.department || null,
+                avatar_url: fallbackAvatar,
                 created_at: session.user.created_at,
                 updated_at: session.user.created_at,
-              });
+              };
+
+              await supabase.from('profiles').upsert(newProfile);
+              setUser(newProfile);
             }
           } else {
             clearSessionCookie();
@@ -127,10 +141,38 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
           if (profile) {
             setUser(profile as Profile);
+          } else {
+            const fallbackName =
+              session.user.user_metadata?.full_name ||
+              session.user.user_metadata?.name ||
+              session.user.email?.split('@')[0] ||
+              'Student User';
+            const fallbackAvatar =
+              session.user.user_metadata?.avatar_url ||
+              session.user.user_metadata?.picture ||
+              null;
+
+            const newProfile: Profile = {
+              id: session.user.id,
+              full_name: fallbackName,
+              year: (session.user.user_metadata?.year as Year) || null,
+              semester: (session.user.user_metadata?.semester as Semester) || null,
+              department: session.user.user_metadata?.department || null,
+              avatar_url: fallbackAvatar,
+              created_at: session.user.created_at,
+              updated_at: session.user.created_at,
+            };
+
+            await client.from('profiles').upsert(newProfile);
+            setUser(newProfile);
           }
         } else if (event === 'SIGNED_OUT') {
           clearSessionCookie();
           setUser(null);
+          if (typeof window !== 'undefined') {
+            localStorage.removeItem(LOCAL_STORAGE_USER_KEY);
+            window.location.href = '/auth';
+          }
         }
       });
 
@@ -291,7 +333,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const loginWithGoogle = useCallback(async () => {
     if (isSupabaseConfigured && supabase) {
       const redirectUrl = typeof window !== 'undefined'
-        ? `${window.location.origin}/`
+        ? `${window.location.origin}/auth/callback`
         : undefined;
 
       const { error } = await supabase.auth.signInWithOAuth({
@@ -318,13 +360,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // Logout
   const logout = useCallback(async () => {
-    if (isSupabaseConfigured && supabase) {
-      await supabase.auth.signOut();
-    }
-    clearSessionCookie();
-    setUser(null);
-    if (typeof window !== 'undefined') {
-      localStorage.removeItem(LOCAL_STORAGE_USER_KEY);
+    try {
+      if (isSupabaseConfigured && supabase) {
+        await supabase.auth.signOut();
+      }
+    } catch (err) {
+      console.error('Supabase signOut error:', err);
+    } finally {
+      clearSessionCookie();
+      setUser(null);
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem(LOCAL_STORAGE_USER_KEY);
+        window.location.href = '/auth';
+      }
     }
   }, []);
 
@@ -396,12 +444,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, []);
 
+  const needsAcademicDetails = Boolean(
+    user && (!user.year || !user.semester || !user.department)
+  );
+
   return (
     <AuthContext.Provider
       value={{
         user,
         isLoading,
         isSupabaseConnected: isSupabaseConfigured,
+        needsAcademicDetails,
         login,
         signup,
         loginWithGoogle,

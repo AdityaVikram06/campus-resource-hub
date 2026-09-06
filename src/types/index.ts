@@ -7,9 +7,9 @@ export type Year = '1st Year' | '2nd Year' | '3rd Year' | '4th Year';
 export interface Profile {
   id: string;
   full_name: string;
-  year: Year;
-  semester: Semester;
-  department: string;
+  year?: Year | null;
+  semester?: Semester | null;
+  department?: string | null;
   avatar_url?: string | null;
   created_at: string;
   updated_at: string;
