@@ -3,7 +3,6 @@
 import React, { createContext, useContext, useEffect, useState, useMemo, useCallback } from 'react';
 import { DocumentItem, DocumentPage, DocumentType, Semester, SortOption } from '@/types';
 import { supabase, isSupabaseConfigured } from '@/lib/supabase/client';
-import { INITIAL_DOCUMENTS, INITIAL_DOCUMENT_PAGES, generateSamplePdfDocument } from '@/lib/mockData';
 import { useAuth } from './AuthContext';
 import { validateDocumentFile, convertImageToPdf } from '@/lib/pdfConverter';
 
@@ -11,6 +10,7 @@ interface DocumentContextType {
   documents: DocumentItem[];
   pages: DocumentPage[];
   isLoading: boolean;
+  isSupabaseConnected: boolean;
   searchQuery: string;
   setSearchQuery: (query: string) => void;
   selectedType: DocumentType | 'All';
@@ -37,14 +37,12 @@ interface DocumentContextType {
   }) => Promise<{ success: boolean; documentId?: string; error?: string }>;
   deleteDocument: (documentId: string) => Promise<{ success: boolean; error?: string }>;
   getDocumentPdfUrl: (doc: DocumentItem) => Promise<string>;
+  refreshDocuments: () => Promise<void>;
 }
 
 const DocumentContext = createContext<DocumentContextType | undefined>(undefined);
 
-const LOCAL_STORAGE_DOCS_KEY = 'campus_hub_docs_v1';
-const LOCAL_STORAGE_PAGES_KEY = 'campus_hub_pages_v1';
-
-// In-memory cache of generated or uploaded PDF Object URLs
+// In-memory cache of signed document URLs
 const pdfBlobUrlCache = new Map<string, string>();
 
 export const DocumentProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -63,159 +61,131 @@ export const DocumentProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [currentPage, setCurrentPage] = useState<number>(1);
   const [itemsPerPage, setItemsPerPage] = useState<number>(12);
 
-  // Load documents
-  useEffect(() => {
-    async function loadData() {
-      setIsLoading(true);
+  // Load real documents from Supabase
+  const loadData = useCallback(async () => {
+    setIsLoading(true);
 
-      if (isSupabaseConfigured && supabase) {
-        try {
-          const { data: docs, error: docsError } = await supabase
-            .from('documents')
-            .select(`
-              *,
-              uploader:profiles(*)
-            `)
-            .order('created_at', { ascending: false });
+    if (isSupabaseConfigured && supabase) {
+      try {
+        const { data: docs, error: docsError } = await supabase
+          .from('documents')
+          .select(`
+            *,
+            uploader:profiles(*)
+          `)
+          .order('created_at', { ascending: false });
 
-          const { data: pagesData } = await supabase
-            .from('document_pages')
-            .select('*');
+        const { data: pagesData } = await supabase
+          .from('document_pages')
+          .select('*');
 
-          if (!docsError && docs && docs.length > 0) {
-            setDocuments(docs as DocumentItem[]);
-            setPages((pagesData || []) as DocumentPage[]);
-            setIsLoading(false);
-            return;
-          }
-        } catch (err) {
-          console.error('Supabase documents load error, falling back to local store:', err);
-        }
-      }
-
-      // Local storage or default mock documents
-      if (typeof window !== 'undefined') {
-        const savedDocs = localStorage.getItem(LOCAL_STORAGE_DOCS_KEY);
-        const savedPages = localStorage.getItem(LOCAL_STORAGE_PAGES_KEY);
-
-        if (savedDocs) {
-          try {
-            setDocuments(JSON.parse(savedDocs));
-          } catch {
-            setDocuments(INITIAL_DOCUMENTS);
-          }
+        if (!docsError && docs) {
+          setDocuments(docs as DocumentItem[]);
+          setPages((pagesData || []) as DocumentPage[]);
         } else {
-          setDocuments(INITIAL_DOCUMENTS);
+          setDocuments([]);
+          setPages([]);
         }
-
-        if (savedPages) {
-          try {
-            setPages(JSON.parse(savedPages));
-          } catch {
-            setPages(INITIAL_DOCUMENT_PAGES);
-          }
-        } else {
-          setPages(INITIAL_DOCUMENT_PAGES);
-        }
-      } else {
-        setDocuments(INITIAL_DOCUMENTS);
-        setPages(INITIAL_DOCUMENT_PAGES);
+      } catch (err) {
+        console.error('Failed to load documents from Supabase:', err);
+        setDocuments([]);
+        setPages([]);
       }
-
-      setIsLoading(false);
+    } else {
+      // Supabase is not configured - no fake/mock documents
+      setDocuments([]);
+      setPages([]);
     }
 
-    loadData();
+    setIsLoading(false);
   }, []);
 
-  // Save changes to localStorage in local mode
-  const persistLocalData = (newDocs: DocumentItem[], newPages: DocumentPage[]) => {
-    if (typeof window !== 'undefined') {
-      localStorage.setItem(LOCAL_STORAGE_DOCS_KEY, JSON.stringify(newDocs));
-      localStorage.setItem(LOCAL_STORAGE_PAGES_KEY, JSON.stringify(newPages));
-    }
-  };
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
 
   // Filter and sort documents
   const filteredAndSortedDocuments = useMemo(() => {
     let result = [...documents];
 
-    // Filter by Type
+    // Filter by type
     if (selectedType !== 'All') {
-      result = result.filter((d) => d.type === selectedType);
+      result = result.filter((doc) => doc.type === selectedType);
     }
 
-    // Filter by Semester
+    // Filter by semester
     if (selectedSemester !== 'All') {
-      result = result.filter((d) => d.semester === selectedSemester);
+      result = result.filter((doc) => doc.semester === selectedSemester);
     }
 
-    // Search bar filter: title, type, uploader name, semester, subject
+    // Filter by search query
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase().trim();
-      result = result.filter((d) => {
-        const titleMatch = d.title.toLowerCase().includes(q);
-        const typeMatch = d.type.toLowerCase().includes(q);
-        const semMatch = d.semester.toLowerCase().includes(q);
-        const uploaderMatch = d.uploader?.full_name.toLowerCase().includes(q);
-        const subjectMatch = d.subject?.toLowerCase().includes(q);
-        return titleMatch || typeMatch || semMatch || uploaderMatch || subjectMatch;
+      result = result.filter((doc) => {
+        const titleMatch = doc.title.toLowerCase().includes(q);
+        const subjectMatch = doc.subject ? doc.subject.toLowerCase().includes(q) : false;
+        const uploaderMatch = doc.uploader?.full_name ? doc.uploader.full_name.toLowerCase().includes(q) : false;
+        const typeMatch = doc.type.toLowerCase().includes(q);
+        const semMatch = doc.semester.toLowerCase().includes(q);
+
+        // Also search in document pages content
+        const pageMatch = pages.some(
+          (p) => p.document_id === doc.id && p.content.toLowerCase().includes(q)
+        );
+
+        return titleMatch || subjectMatch || uploaderMatch || typeMatch || semMatch || pageMatch;
       });
     }
 
-    // Sort controls
+    // Sorting
     result.sort((a, b) => {
-      if (sortBy === 'newest') {
-        return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
-      }
-      if (sortBy === 'oldest') {
-        return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
-      }
-      if (sortBy === 'deadline') {
-        // Items with deadlines first, nearest deadline first
-        if (a.deadline && b.deadline) {
+      switch (sortBy) {
+        case 'newest':
+          return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+        case 'oldest':
+          return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+        case 'deadline': {
+          if (!a.deadline && !b.deadline) return 0;
+          if (!a.deadline) return 1;
+          if (!b.deadline) return -1;
           return new Date(a.deadline).getTime() - new Date(b.deadline).getTime();
         }
-        if (a.deadline && !b.deadline) return -1;
-        if (!a.deadline && b.deadline) return 1;
-        return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+        case 'semester_asc':
+          return a.semester.localeCompare(b.semester);
+        case 'semester_desc':
+          return b.semester.localeCompare(a.semester);
+        default:
+          return 0;
       }
-      if (sortBy === 'semester_asc') {
-        return a.semester.localeCompare(b.semester);
-      }
-      if (sortBy === 'semester_desc') {
-        return b.semester.localeCompare(a.semester);
-      }
-      return 0;
     });
 
     return result;
-  }, [documents, selectedType, selectedSemester, searchQuery, sortBy]);
+  }, [documents, pages, selectedType, selectedSemester, searchQuery, sortBy]);
 
-  // Reset page when filter/search changes
+  // Reset page when filters change
   useEffect(() => {
     setCurrentPage(1);
   }, [searchQuery, selectedType, selectedSemester, sortBy]);
 
-  // Pagination calculation
+  // Calculate pagination
   const totalFilteredCount = filteredAndSortedDocuments.length;
   const totalPages = Math.max(1, Math.ceil(totalFilteredCount / itemsPerPage));
+
+  // Ensure current page is valid
+  useEffect(() => {
+    if (currentPage > totalPages && totalPages > 0) {
+      setCurrentPage(totalPages);
+    }
+  }, [currentPage, totalPages]);
+
   const paginatedDocuments = useMemo(() => {
-    const startIndex = (currentPage - 1) * itemsPerPage;
-    return filteredAndSortedDocuments.slice(startIndex, startIndex + itemsPerPage);
+    const start = (currentPage - 1) * itemsPerPage;
+    return filteredAndSortedDocuments.slice(start, start + itemsPerPage);
   }, [filteredAndSortedDocuments, currentPage, itemsPerPage]);
 
   // Upload Document
   const uploadDocument = useCallback(
-    async ({
-      title,
-      type,
-      semester,
-      subject,
-      deadline,
-      file,
-      onProgress,
-    }: {
+    async (params: {
       title: string;
       type: DocumentType;
       semester: Semester;
@@ -224,60 +194,69 @@ export const DocumentProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       file: File;
       onProgress?: (status: string) => void;
     }) => {
+      const { title, type, semester, subject, deadline, file, onProgress } = params;
+
       if (!user) {
-        return { success: false, error: 'You must be logged in to upload documents.' };
+        return { success: false, error: 'You must be signed in to upload documents.' };
       }
 
-      // Step 1: Validate file format and size
+      if (!isSupabaseConfigured || !supabase) {
+        return {
+          success: false,
+          error: 'Supabase database is not configured. Please add NEXT_PUBLIC_SUPABASE_URL and key to .env.local.',
+        };
+      }
+
+      onProgress?.('Validating document format and size...');
       const validation = validateDocumentFile(file);
       if (!validation.valid) {
-        return { success: false, error: validation.error || 'Invalid file.' };
+        return { success: false, error: validation.error };
       }
 
-      onProgress?.('Preparing document for upload...');
+      try {
+        let finalFile = file;
+        let isConverted = false;
+        let pageCount = 1;
 
-      let finalFile = file;
-      let pageCount = 1;
-
-      // Step 2: Auto-convert images to PDF
-      if (validation.isImage) {
-        onProgress?.('Converting image to PDF format...');
-        try {
-          const converted = await convertImageToPdf(file);
-          finalFile = converted.pdfFile;
-          pageCount = converted.pageCount;
-        } catch (convErr) {
-          console.error('Image conversion error:', convErr);
-          return {
-            success: false,
-            error: 'Failed to convert image to PDF. Please try a different image or upload a PDF directly.',
-          };
-        }
-      }
-
-      const docId = `doc_${Date.now()}`;
-      const cleanFileName = finalFile.name.replace(/[^a-zA-Z0-9._-]/g, '_');
-      const storagePath = `${user.id}/${docId}_${cleanFileName}`;
-
-      onProgress?.('Uploading to secure campus storage...');
-
-      // Step 3: Handle Supabase or Local Mode
-      if (isSupabaseConfigured && supabase) {
-        try {
-          // Upload to Supabase storage bucket 'documents'
-          const { error: storageError } = await supabase.storage
-            .from('documents')
-            .upload(storagePath, finalFile, {
-              contentType: 'application/pdf',
-              upsert: false,
-            });
-
-          if (storageError) {
-            return { success: false, error: `Storage upload failed: ${storageError.message}` };
+        // Convert image files (JPG/PNG/WebP) to standard PDF
+        if (file.type.startsWith('image/')) {
+          onProgress?.('Converting uploaded image to standardized PDF...');
+          try {
+            const conversion = await convertImageToPdf(file);
+            finalFile = conversion.pdfFile;
+            pageCount = conversion.pageCount;
+            isConverted = true;
+          } catch (convErr) {
+            console.error('Image to PDF conversion failed:', convErr);
+            return { success: false, error: 'Image conversion failed. Please try a different image or upload a PDF.' };
           }
+        }
 
-          // Insert row into 'documents' table
-          const newDocRow = {
+        const docId = `doc_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+        const cleanFileName = isConverted
+          ? `${file.name.replace(/\.[^/.]+$/, '')}.pdf`
+          : file.name;
+        const fileExt = isConverted ? 'pdf' : (file.name.split('.').pop() || 'pdf');
+        const storagePath = `${user.id}/${docId}.${fileExt}`;
+
+        onProgress?.('Uploading document to secure storage...');
+        const { error: uploadError } = await supabase.storage
+          .from('documents')
+          .upload(storagePath, finalFile, {
+            contentType: 'application/pdf',
+            upsert: true,
+          });
+
+        if (uploadError) {
+          console.error('Storage upload error:', uploadError);
+          return { success: false, error: `Storage upload failed: ${uploadError.message}` };
+        }
+
+        onProgress?.('Indexing document metadata and subject tags...');
+        const { data: insertedDoc, error: insertError } = await supabase
+          .from('documents')
+          .insert({
+            id: docId,
             title: title.trim(),
             type,
             semester,
@@ -289,77 +268,37 @@ export const DocumentProvider: React.FC<{ children: React.ReactNode }> = ({ chil
             file_size: finalFile.size,
             file_type: 'application/pdf',
             page_count: pageCount,
-            created_at: new Date().toISOString(),
-          };
+          })
+          .select(`
+            *,
+            uploader:profiles(*)
+          `)
+          .single();
 
-          const { data: insertedDoc, error: insertError } = await supabase
-            .from('documents')
-            .insert(newDocRow)
-            .select('*, uploader:profiles(*)')
-            .single();
-
-          if (insertError || !insertedDoc) {
-            return { success: false, error: `Database insert failed: ${insertError?.message}` };
-          }
-
-          // Insert default extracted page text for AI search
-          const newPageRow = {
-            document_id: insertedDoc.id,
-            page_number: 1,
-            content: `${title}. Course: ${subject || 'BTech'}. Type: ${type}, ${semester}. Uploaded by ${user.full_name}. Verified student document.`,
-          };
-          await supabase.from('document_pages').insert(newPageRow);
-
-          // Update local state
-          const formattedDoc = insertedDoc as DocumentItem;
-          setDocuments((prev) => [formattedDoc, ...prev]);
-          setPages((prev) => [...prev, newPageRow as DocumentPage]);
-
-          return { success: true, documentId: insertedDoc.id };
-        } catch (err) {
-          console.error('Upload error in Supabase mode:', err);
-          return { success: false, error: err instanceof Error ? err.message : 'Upload failed' };
+        if (insertError || !insertedDoc) {
+          return { success: false, error: `Database insert failed: ${insertError?.message}` };
         }
-      } else {
-        // Local mode
-        const objectUrl = URL.createObjectURL(finalFile);
-        pdfBlobUrlCache.set(storagePath, objectUrl);
 
-        const newDoc: DocumentItem = {
-          id: docId,
-          title: title.trim(),
-          type,
-          semester,
-          subject: subject?.trim() || undefined,
-          uploader_id: user.id,
-          deadline: deadline || null,
-          file_path: storagePath,
-          file_name: cleanFileName,
-          file_size: finalFile.size,
-          file_type: 'application/pdf',
-          page_count: pageCount,
-          created_at: new Date().toISOString(),
-          uploader: user,
-        };
-
-        const newPage: DocumentPage = {
-          id: `page_${docId}_1`,
-          document_id: docId,
+        // Insert initial page text for AI Assistant indexing
+        const newPageRow = {
+          document_id: insertedDoc.id,
           page_number: 1,
-          content: `${title}. Subject: ${subject || 'BTech'}. Category: ${type}, ${semester}. Contributed by ${user.full_name}. Verified academic resource.`,
+          content: `${title}. Course: ${subject || 'General BTech'}. Category: ${type}, ${semester}. Uploaded by ${user.full_name}.`,
         };
+        await supabase.from('document_pages').insert(newPageRow);
 
-        const updatedDocs = [newDoc, ...documents];
-        const updatedPages = [...pages, newPage];
+        // Update local state
+        const formattedDoc = insertedDoc as DocumentItem;
+        setDocuments((prev) => [formattedDoc, ...prev]);
+        setPages((prev) => [...prev, newPageRow as DocumentPage]);
 
-        setDocuments(updatedDocs);
-        setPages(updatedPages);
-        persistLocalData(updatedDocs, updatedPages);
-
-        return { success: true, documentId: docId };
+        return { success: true, documentId: insertedDoc.id };
+      } catch (err) {
+        console.error('Upload error in Supabase mode:', err);
+        return { success: false, error: err instanceof Error ? err.message : 'Upload failed' };
       }
     },
-    [user, documents, pages]
+    [user]
   );
 
   // Delete Document (Protected by RLS check)
@@ -388,71 +327,51 @@ export const DocumentProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           await supabase.storage.from('documents').remove([docToDelete.file_path]);
 
           // Delete from database (document_pages cascade automatically)
-          const { error: dbError } = await supabase
-            .from('documents')
-            .delete()
-            .eq('id', documentId)
-            .eq('uploader_id', user.id); // Double guard with auth check
-
-          if (dbError) {
-            return { success: false, error: dbError.message };
+          const { error } = await supabase.from('documents').delete().eq('id', documentId);
+          if (error) {
+            return { success: false, error: error.message };
           }
+
+          pdfBlobUrlCache.delete(docToDelete.file_path);
+          setDocuments((prev) => prev.filter((d) => d.id !== documentId));
+          setPages((prev) => prev.filter((p) => p.document_id !== documentId));
+
+          return { success: true };
         } catch (err) {
-          console.error('Delete error:', err);
           return { success: false, error: err instanceof Error ? err.message : 'Delete failed' };
         }
+      } else {
+        return { success: false, error: 'Supabase database is not configured.' };
       }
-
-      // Update local state
-      const updatedDocs = documents.filter((d) => d.id !== documentId);
-      const updatedPages = pages.filter((p) => p.document_id !== documentId);
-      setDocuments(updatedDocs);
-      setPages(updatedPages);
-      persistLocalData(updatedDocs, updatedPages);
-
-      // Clean up cached blob URL
-      if (pdfBlobUrlCache.has(docToDelete.file_path)) {
-        URL.revokeObjectURL(pdfBlobUrlCache.get(docToDelete.file_path)!);
-        pdfBlobUrlCache.delete(docToDelete.file_path);
-      }
-
-      return { success: true };
     },
-    [user, documents, pages]
+    [user, documents]
   );
 
-  // Get in-browser viewing PDF Blob URL for any document
+  // Get PDF Url for viewer
   const getDocumentPdfUrl = useCallback(
     async (doc: DocumentItem): Promise<string> => {
-      // 1. Check if already cached
       if (pdfBlobUrlCache.has(doc.file_path)) {
         return pdfBlobUrlCache.get(doc.file_path)!;
       }
 
-      // 2. If Supabase is connected, get signed URL or public URL
       if (isSupabaseConfigured && supabase) {
         try {
           const { data, error } = await supabase.storage
             .from('documents')
-            .createSignedUrl(doc.file_path, 3600); // 1 hour valid
+            .createSignedUrl(doc.file_path, 3600);
 
           if (!error && data?.signedUrl) {
             pdfBlobUrlCache.set(doc.file_path, data.signedUrl);
             return data.signedUrl;
           }
         } catch (err) {
-          console.warn('Could not create signed URL, generating mock PDF:', err);
+          console.warn('Could not create signed URL for document:', err);
         }
       }
 
-      // 3. Fallback: generate high-fidelity PDF from mockData generator
-      const pdfBytes = await generateSamplePdfDocument(doc, pages);
-      const blob = new Blob([pdfBytes as unknown as BlobPart], { type: 'application/pdf' });
-      const objectUrl = URL.createObjectURL(blob);
-      pdfBlobUrlCache.set(doc.file_path, objectUrl);
-      return objectUrl;
+      throw new Error(`Document file unavailable in storage: ${doc.file_name}`);
     },
-    [pages]
+    []
   );
 
   return (
@@ -461,6 +380,7 @@ export const DocumentProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         documents,
         pages,
         isLoading,
+        isSupabaseConnected: isSupabaseConfigured,
         searchQuery,
         setSearchQuery,
         selectedType,
@@ -479,6 +399,7 @@ export const DocumentProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         uploadDocument,
         deleteDocument,
         getDocumentPdfUrl,
+        refreshDocuments: loadData,
       }}
     >
       {children}

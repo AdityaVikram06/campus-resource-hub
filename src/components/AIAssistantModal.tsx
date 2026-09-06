@@ -133,11 +133,6 @@ export const AIAssistantModal: React.FC<AIAssistantModalProps> = ({
                     Gemini 3.6 Flash
                   </span>
                 )}
-                {mode === 'anthropic' && (
-                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-[#FAFAF8] text-[#60B5FF] border border-[#E8E8E3]">
-                    Claude 3.5
-                  </span>
-                )}
               </h3>
               <p className="text-xs text-[#64666E] font-semibold">
                 Natural-language document retrieval with exact page references

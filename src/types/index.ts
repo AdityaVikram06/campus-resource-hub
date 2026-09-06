@@ -61,7 +61,7 @@ export interface AISearchResponse {
   answer: string;
   matches: SearchResultMatch[];
   query: string;
-  mode: 'anthropic' | 'gemini' | 'keyword_fallback';
+  mode: 'gemini' | 'keyword_fallback';
   rateLimitRemaining?: number;
 }
 

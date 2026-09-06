@@ -22,6 +22,8 @@ import {
   List,
   Clock,
   Loader2,
+  AlertCircle,
+  UploadCloud,
 } from 'lucide-react';
 
 const TYPE_PILLS: (DocumentType | 'All')[] = [
@@ -66,7 +68,7 @@ function DashboardContent() {
     paginatedDocuments,
   } = useDocuments();
 
-  const { needsAcademicDetails } = useAuth();
+  const { needsAcademicDetails, isSupabaseConnected } = useAuth();
 
   // Modals state
   const [isUploadOpen, setIsUploadOpen] = useState(false);
@@ -213,6 +215,19 @@ function DashboardContent() {
       {/* Main Content Area */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
         
+        {/* Database Configuration Error Banner */}
+        {!isSupabaseConnected && (
+          <div className="bg-[#F35252]/10 border border-[#F35252]/30 rounded-2xl p-4 flex items-start gap-3 text-xs text-[#F35252]">
+            <AlertCircle className="w-5 h-5 flex-shrink-0 mt-0.5 text-[#F35252]" />
+            <div>
+              <h4 className="font-bold text-sm text-[#F35252] mb-0.5">Database Not Connected</h4>
+              <p className="text-xs text-[#1C1D1F]">
+                Supabase credentials are not detected. Please configure <code>NEXT_PUBLIC_SUPABASE_URL</code> and <code>NEXT_PUBLIC_SUPABASE_ANON_KEY</code> (or <code>NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY</code>) in your <code>.env.local</code> file to load and upload documents.
+              </p>
+            </div>
+          </div>
+        )}
+        
         {/* Search, Sort & Filters Toolbar */}
         <div className="bg-[#FFFFFF] rounded-2xl p-4 border border-[#E8E8E3] shadow-xs space-y-4">
           
@@ -342,22 +357,43 @@ function DashboardContent() {
             <div className="w-16 h-16 mx-auto rounded-2xl bg-[#FFE588]/30 text-[#1C1D1F] border border-[#FFE588] flex items-center justify-center mb-3">
               <FileText className="w-8 h-8 text-[#1C1D1F]" />
             </div>
-            <h3 className="text-base font-bold text-[#1C1D1F] mb-1">
-              No documents matched your filters
-            </h3>
-            <p className="text-xs text-[#64666E] font-medium max-w-md mx-auto mb-4">
-              Try adjusting your search terms, changing the semester filter, or be the first to upload resources for this course!
-            </p>
-            <button
-              onClick={() => {
-                setSearchQuery('');
-                setSelectedType('All');
-                setSelectedSemester('All');
-              }}
-              className="px-4 py-2 rounded-xl text-xs font-bold bg-[#FAFAF8] text-[#1C1D1F] border border-[#E8E8E3] hover:bg-[#E8E8E3] transition-colors cursor-pointer"
-            >
-              Reset Filters
-            </button>
+            {documents.length === 0 ? (
+              <>
+                <h3 className="text-base font-bold text-[#1C1D1F] mb-1">
+                  No campus documents uploaded yet
+                </h3>
+                <p className="text-xs text-[#64666E] font-medium max-w-md mx-auto mb-4">
+                  Be the first student to share lecture notes, lab experiment reports, or previous year exam papers with your campus peers!
+                </p>
+                <button
+                  id="empty-upload-first-btn"
+                  onClick={() => setIsUploadOpen(true)}
+                  className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold bg-[#60B5FF] hover:bg-[#4ea5ef] text-[#FFFFFF] shadow-xs active:scale-95 transition-all cursor-pointer"
+                >
+                  <UploadCloud className="w-4 h-4" />
+                  <span>Upload First Document</span>
+                </button>
+              </>
+            ) : (
+              <>
+                <h3 className="text-base font-bold text-[#1C1D1F] mb-1">
+                  No documents matched your filters
+                </h3>
+                <p className="text-xs text-[#64666E] font-medium max-w-md mx-auto mb-4">
+                  Try adjusting your search terms, changing the semester filter, or be the first to upload resources for this course!
+                </p>
+                <button
+                  onClick={() => {
+                    setSearchQuery('');
+                    setSelectedType('All');
+                    setSelectedSemester('All');
+                  }}
+                  className="px-4 py-2 rounded-xl text-xs font-bold bg-[#FAFAF8] text-[#1C1D1F] border border-[#E8E8E3] hover:bg-[#E8E8E3] transition-colors cursor-pointer"
+                >
+                  Reset Filters
+                </button>
+              </>
+            )}
           </div>
         ) : viewMode === 'grid' ? (
           /* Grid View */

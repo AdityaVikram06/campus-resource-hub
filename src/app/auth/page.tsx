@@ -415,12 +415,12 @@ function AuthContent() {
             </div>
           </form>
 
-          {/* Quick Demo Help Indicator (Soft Yellow highlight/info) */}
+          {/* Configuration Error State */}
           {!isSupabaseConnected && (
-            <div className="p-3 rounded-2xl bg-[#FFE588]/20 border border-[#FFE588] text-[11px] text-[#1C1D1F] font-medium flex items-start gap-2">
-              <Sparkles className="w-3.5 h-3.5 flex-shrink-0 mt-0.5 text-[#F79D65]" />
+            <div className="p-3.5 rounded-2xl bg-[#F35252]/10 border border-[#F35252]/30 text-xs text-[#F35252] font-semibold flex items-start gap-2.5">
+              <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5 text-[#F35252]" />
               <div>
-                <strong>Local / Demo Mode:</strong> You can create any account or sign in immediately. Check <code>.env.example</code> to connect a live Supabase instance!
+                <span className="font-bold">Database Not Configured:</span> Supabase environment variables are missing. Please configure <code>NEXT_PUBLIC_SUPABASE_URL</code> and <code>NEXT_PUBLIC_SUPABASE_ANON_KEY</code> in <code>.env.local</code> to enable student authentication.
               </div>
             </div>
           )}
