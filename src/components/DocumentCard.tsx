@@ -13,6 +13,7 @@ import {
   Calendar,
   AlertCircle,
   Share2,
+  ExternalLink,
 } from 'lucide-react';
 
 interface DocumentCardProps {
@@ -272,6 +273,18 @@ export const DocumentCard: React.FC<DocumentCardProps> = ({ document: doc, onVie
             >
               <Share2 className="w-4 h-4" />
             </button>
+
+            {/* Open in Dedicated Tab (Secondary Opt-in Action) */}
+            <a
+              id={`new-tab-btn-${doc.id}`}
+              href={`/view/${doc.id}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="p-2 rounded-xl border border-[#E8E8E3] text-[#1C1D1F] bg-[#FFFFFF] hover:bg-[#FAFAF8] hover:border-[#60B5FF] hover:text-[#60B5FF] transition-colors cursor-pointer inline-flex items-center justify-center"
+              title="Open full page in new tab"
+            >
+              <ExternalLink className="w-4 h-4" />
+            </a>
 
             {/* Delete Button (Allowed and visible only for uploader) */}
             {isUploader && (

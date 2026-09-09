@@ -167,17 +167,21 @@ export const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
         divId: containerId,
       });
 
+      const isMobile = typeof window !== 'undefined' && window.innerWidth < 768;
+
       const previewPromise = adobeDCView.previewFile(
         {
           content: { location: { url: signedUrl } },
           metaData: { fileName: doc.file_name || `${doc.title}.pdf` },
         },
         {
-          embedMode: 'SIZED_CONTAINER',
+          embedMode: 'FULL_WINDOW',
+          defaultViewMode: 'FIT_WIDTH',
           showAnnotationTools: false,
-          showLeftHandPanel: true,
+          showLeftHandPanel: !isMobile,
           showDownloadPDF: true,
           showPrintPDF: true,
+          showPageControls: true,
         }
       );
 
@@ -339,6 +343,18 @@ export const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
             >
               <Share2 className="w-4 h-4" />
             </button>
+
+            {/* Open in Dedicated Tab (Secondary Opt-in Action) */}
+            <a
+              id="viewer-new-tab-btn"
+              href={`/view/${doc.id}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              title="Open full page in new tab"
+              className="p-1.5 rounded-xl border border-[#E8E8E3] bg-[#FFFFFF] hover:bg-[#FAFAF8] text-[#64666E] hover:text-[#60B5FF] transition-all cursor-pointer"
+            >
+              <ExternalLink className="w-4 h-4" />
+            </a>
 
             {/* Close Button */}
             <button
