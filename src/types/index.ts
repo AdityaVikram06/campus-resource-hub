@@ -1,6 +1,62 @@
-export type DocumentType = 'Notes' | 'Assignment' | 'Experiment' | 'End-Sem Exam Paper' | 'Midsem Paper';
+export type DocumentType =
+  | 'Notes'
+  | 'Assignment'
+  | 'Experiment'
+  | 'End-Sem Exam Paper'
+  | 'Midsem Paper';
 
-export type Semester = 'Sem 1' | 'Sem 2' | 'Sem 3' | 'Sem 4' | 'Sem 5' | 'Sem 6' | 'Sem 7' | 'Sem 8';
+export type DbDocumentType =
+  | 'notes'
+  | 'assignment'
+  | 'experiment'
+  | 'end_sem_exam_paper'
+  | 'midsem_paper';
+
+export function toDbDocumentType(type: DocumentType | string): DbDocumentType {
+  switch (type.toLowerCase().trim()) {
+    case 'assignment':
+      return 'assignment';
+    case 'experiment':
+      return 'experiment';
+    case 'end-sem exam paper':
+    case 'end_sem_exam_paper':
+      return 'end_sem_exam_paper';
+    case 'midsem paper':
+    case 'midsem_paper':
+      return 'midsem_paper';
+    case 'notes':
+    default:
+      return 'notes';
+  }
+}
+
+export function fromDbDocumentType(type: string): DocumentType {
+  switch (type.toLowerCase().trim()) {
+    case 'assignment':
+      return 'Assignment';
+    case 'experiment':
+      return 'Experiment';
+    case 'end_sem_exam_paper':
+    case 'end-sem exam paper':
+      return 'End-Sem Exam Paper';
+    case 'midsem_paper':
+    case 'midsem paper':
+      return 'Midsem Paper';
+    case 'notes':
+    default:
+      return 'Notes';
+  }
+}
+
+export type Semester =
+  | 'Sem 1'
+  | 'Sem 2'
+  | 'Sem 3'
+  | 'Sem 4'
+  | 'Sem 5'
+  | 'Sem 6'
+  | 'Sem 7'
+  | 'Sem 8';
 
 export type Year = '1st Year' | '2nd Year' | '3rd Year' | '4th Year';
 
@@ -23,11 +79,12 @@ export interface DocumentItem {
   subject?: string;
   uploader_id: string;
   deadline?: string | null; // ISO string for assignments/experiments
-  file_path: string;
+  file_path: string; // Object key in Backblaze B2 Resources-hub bucket
   file_name: string;
   file_size: number;
   file_type: string;
   page_count: number;
+  file_hash: string;
   created_at: string;
   uploader?: Profile;
 }
@@ -65,4 +122,17 @@ export interface AISearchResponse {
   rateLimitRemaining?: number;
 }
 
-export type SortOption = 'newest' | 'oldest' | 'deadline' | 'semester_asc' | 'semester_desc';
+export type SortOption =
+  | 'newest'
+  | 'oldest'
+  | 'deadline'
+  | 'semester_asc'
+  | 'semester_desc';
+
+export interface StorageStats {
+  usedBytes: number;
+  quotaBytes: number; // 10 GB
+  usedPercentage: number;
+  fileCount: number;
+  freeBytes: number;
+}

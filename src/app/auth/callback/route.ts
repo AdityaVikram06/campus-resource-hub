@@ -75,13 +75,6 @@ export async function GET(request: NextRequest) {
       return NextResponse.redirect(new URL('/auth?error=oauth_failed', origin));
     }
 
-    // Set fast campus_auth_session cookie for instant middleware validation
-    response.cookies.set('campus_auth_session', 'active', {
-      path: '/',
-      maxAge: 604800,
-      sameSite: 'lax',
-      httpOnly: false,
-    });
 
     // Check if user has completed academic onboarding
     const user = data.session.user;

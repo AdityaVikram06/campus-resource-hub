@@ -9,16 +9,20 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1128.0",
+    "@aws-sdk/s3-request-presigner": "^3.1128.0",
     "@google/generative-ai": "^0.24.1",
     "@supabase/ssr": "^0.12.6",
     "@supabase/supabase-js": "^2.115.0",
     "clsx": "^2.1.1",
+    "https-proxy-agent": "^9.1.0",
     "lucide-react": "^1.41.0",
     "next": "16.3.4",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^3.11.174",
     "react": "19.2.8",
     "react-dom": "19.2.8",
+    "safe-buffer": "^5.2.1",
     "tailwind-merge": "^3.6.0"
   },
   "devDependencies": {

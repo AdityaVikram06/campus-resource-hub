@@ -4,6 +4,7 @@ import React, { useState } from 'react';
 import Link from 'next/link';
 import { useAuth } from '@/context/AuthContext';
 import { useDocuments } from '@/context/DocumentContext';
+import { StorageUsageIndicator } from '@/components/StorageUsageIndicator';
 import {
   GraduationCap,
   Sparkles,
@@ -83,7 +84,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenUpload, onOpenAI }) => {
               <span>Upload</span>
             </button>
 
-            {/* User Profile & Demo Switcher */}
+            {/* User Profile Dropdown */}
             {user ? (
               <div className="relative">
                 <button
@@ -132,6 +133,10 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenUpload, onOpenAI }) => {
                             {user.year || 'Year not set'}{user.semester ? ` • ${user.semester}` : ''}
                           </span>
                         </div>
+                      </div>
+
+                      <div className="p-2.5 border-b border-[#E8E8E3]">
+                        <StorageUsageIndicator variant="navbar" />
                       </div>
 
                       <div className="py-1">
@@ -254,6 +259,11 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenUpload, onOpenAI }) => {
               <User className="w-4 h-4 text-[#60B5FF]" />
               <span>Student Profile & Upload Breakdown</span>
             </Link>
+          </div>
+
+          {/* Storage Meter */}
+          <div className="pt-1 border-t border-[#E8E8E3]">
+            <StorageUsageIndicator variant="navbar" />
           </div>
 
 

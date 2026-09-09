@@ -1,16 +1,27 @@
 'use client';
 
 import React, { createContext, useContext, useEffect, useState, useMemo, useCallback } from 'react';
-import { DocumentItem, DocumentPage, DocumentType, Semester, SortOption } from '@/types';
+import {
+  DocumentItem,
+  DocumentPage,
+  DocumentType,
+  Semester,
+  SortOption,
+  StorageStats,
+  toDbDocumentType,
+  fromDbDocumentType,
+} from '@/types';
 import { supabase, isSupabaseConfigured } from '@/lib/supabase/client';
 import { useAuth } from './AuthContext';
 import { validateDocumentFile, convertImagesToPdf } from '@/lib/pdfConverter';
+import { computeFileSHA256 } from '@/lib/hashUtils';
 
 interface DocumentContextType {
   documents: DocumentItem[];
   pages: DocumentPage[];
   isLoading: boolean;
   isSupabaseConnected: boolean;
+  storageStats: StorageStats;
   searchQuery: string;
   setSearchQuery: (query: string) => void;
   selectedType: DocumentType | 'All';
@@ -35,7 +46,13 @@ interface DocumentContextType {
     file?: File;
     files?: File[];
     onProgress?: (status: string) => void;
-  }) => Promise<{ success: boolean; documentId?: string; error?: string }>;
+  }) => Promise<{
+    success: boolean;
+    documentId?: string;
+    error?: string;
+    isDuplicate?: boolean;
+    duplicateDoc?: DocumentItem;
+  }>;
   deleteDocument: (documentId: string) => Promise<{ success: boolean; error?: string }>;
   getDocumentPdfUrl: (doc: DocumentItem) => Promise<string>;
   createDocumentSignedUrl: (filePath: string, expiresInSeconds?: number) => Promise<string>;
@@ -44,82 +61,7 @@ interface DocumentContextType {
 
 const DocumentContext = createContext<DocumentContextType | undefined>(undefined);
 
-// In-memory cache of signed document URLs
-const pdfBlobUrlCache = new Map<string, string>();
-
-const DEMO_DOCUMENTS: DocumentItem[] = [
-  {
-    id: 'demo-doc-1',
-    title: 'Data Structures & Algorithms - Complete Notes',
-    subject: 'Data Structures',
-    type: 'Notes',
-    semester: 'Sem 3',
-    uploader_id: '00000000-0000-0000-0000-000000000001',
-    file_path: 'demo/dsa-notes.pdf',
-    file_name: 'dsa-notes.pdf',
-    file_size: 1024 * 1024,
-    file_type: 'pdf',
-    page_count: 5,
-    created_at: '2026-01-01T00:00:00.000Z',
-    uploader: {
-      id: '00000000-0000-0000-0000-000000000001',
-      full_name: 'Demo Student',
-      year: '3rd Year',
-      semester: 'Sem 5',
-      department: 'Computer Science & Engineering',
-      avatar_url: null,
-      created_at: '2026-01-01T00:00:00.000Z',
-      updated_at: '2026-01-01T00:00:00.000Z',
-    },
-  },
-  {
-    id: 'demo-doc-2',
-    title: 'Computer Networks - Lab Assignment 3',
-    subject: 'Computer Networks',
-    type: 'Assignment',
-    semester: 'Sem 5',
-    uploader_id: '00000000-0000-0000-0000-000000000001',
-    file_path: 'demo/networks-report.docx',
-    file_name: 'networks-report.docx',
-    file_size: 512 * 1024,
-    file_type: 'docx',
-    page_count: 3,
-    created_at: '2026-01-01T00:00:00.000Z',
-    uploader: {
-      id: '00000000-0000-0000-0000-000000000001',
-      full_name: 'Demo Student',
-      year: '3rd Year',
-      semester: 'Sem 5',
-      department: 'Computer Science & Engineering',
-      avatar_url: null,
-      created_at: '2026-01-01T00:00:00.000Z',
-      updated_at: '2026-01-01T00:00:00.000Z',
-    },
-  },
-];
-
-// Helper function to clean up legacy test uploads with bad string IDs (doc_...)
-async function cleanupLegacyDocUploads(userId: string) {
-  if (!isSupabaseConfigured || !supabase || !userId) return;
-  try {
-    const { data: files, error } = await supabase.storage
-      .from('documents')
-      .list(userId);
-
-    if (!error && files && files.length > 0) {
-      const badFiles = files
-        .filter((f) => f.name.startsWith('doc_'))
-        .map((f) => `${userId}/${f.name}`);
-
-      if (badFiles.length > 0) {
-        console.log('[Storage Cleanup] Removing legacy test files:', badFiles);
-        await supabase.storage.from('documents').remove(badFiles);
-      }
-    }
-  } catch (cleanErr) {
-    console.warn('[Storage Cleanup] Non-blocking cleanup error:', cleanErr);
-  }
-}
+const B2_QUOTA_BYTES = 10 * 1024 * 1024 * 1024; // 10 GB Free Tier
 
 export const DocumentProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { user } = useAuth();
@@ -137,7 +79,21 @@ export const DocumentProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [currentPage, setCurrentPage] = useState<number>(1);
   const [itemsPerPage, setItemsPerPage] = useState<number>(12);
 
-  // Load real documents from Supabase
+  // Real-Time Storage Statistics (10 GB Backblaze B2 Free Tier)
+  const storageStats = useMemo<StorageStats>(() => {
+    const usedBytes = documents.reduce((acc, doc) => acc + (Number(doc.file_size) || 0), 0);
+    const freeBytes = Math.max(0, B2_QUOTA_BYTES - usedBytes);
+    const usedPercentage = Math.min(100, (usedBytes / B2_QUOTA_BYTES) * 100);
+    return {
+      usedBytes,
+      quotaBytes: B2_QUOTA_BYTES,
+      usedPercentage,
+      fileCount: documents.length,
+      freeBytes,
+    };
+  }, [documents]);
+
+  // Load documents and pages from Supabase
   const loadData = useCallback(async () => {
     setIsLoading(true);
 
@@ -155,20 +111,25 @@ export const DocumentProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           .from('document_pages')
           .select('*');
 
-        if (!docsError && docs && docs.length > 0) {
-          setDocuments(docs as DocumentItem[]);
+        if (!docsError && docs) {
+          const normalizedDocs: DocumentItem[] = docs.map((d) => ({
+            ...d,
+            type: fromDbDocumentType(d.type),
+            file_hash: d.file_hash || '',
+          }));
+
+          setDocuments(normalizedDocs);
           setPages((pagesData || []) as DocumentPage[]);
         } else {
-          setDocuments(DEMO_DOCUMENTS);
+          setDocuments([]);
           setPages([]);
         }
-      } catch (err) {
-        console.error('Failed to load documents from Supabase:', err);
-        setDocuments(DEMO_DOCUMENTS);
+      } catch {
+        setDocuments([]);
         setPages([]);
       }
     } else {
-      setDocuments(DEMO_DOCUMENTS);
+      setDocuments([]);
       setPages([]);
     }
 
@@ -178,13 +139,6 @@ export const DocumentProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   useEffect(() => {
     loadData();
   }, [loadData]);
-
-  // Clean up any legacy test uploads that used invalid 'doc_...' string IDs in storage
-  useEffect(() => {
-    if (user?.id) {
-      cleanupLegacyDocUploads(user.id);
-    }
-  }, [user?.id]);
 
   // Filter and sort documents
   const filteredAndSortedDocuments = useMemo(() => {
@@ -210,9 +164,8 @@ export const DocumentProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         const typeMatch = doc.type.toLowerCase().includes(q);
         const semMatch = doc.semester.toLowerCase().includes(q);
 
-        // Also search in document pages content
         const pageMatch = pages.some(
-          (p) => p.document_id === doc.id && p.content.toLowerCase().includes(q)
+          (p) => p.document_id === doc.id && p.content && p.content.toLowerCase().includes(q)
         );
 
         return titleMatch || subjectMatch || uploaderMatch || typeMatch || semMatch || pageMatch;
@@ -265,7 +218,17 @@ export const DocumentProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     return filteredAndSortedDocuments.slice(start, start + itemsPerPage);
   }, [filteredAndSortedDocuments, currentPage, itemsPerPage]);
 
-  // Upload Document
+  /**
+   * Storage-First, DB-Second Upload Pipeline:
+   * 1. Compute binary SHA-256 hash.
+   * 2. Check for duplicate row in Supabase documents table.
+   * 3. Images converted to PDF via pdf-lib. PDFs & Office docs stored in native format.
+   * 4. Request short-lived presigned upload URL from /api/get-upload-url.
+   * 5. Upload file directly from browser to Backblaze B2 via PUT.
+   * 6. Confirm 200 OK from B2.
+   * 7. Insert row into Supabase documents table with real file_path key and genuine file_type.
+   * 8. Insert document_pages for text search.
+   */
   const uploadDocument = useCallback(
     async (params: {
       title: string;
@@ -283,19 +246,12 @@ export const DocumentProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         return { success: false, error: 'You must be signed in to upload documents.' };
       }
 
-      if (!isSupabaseConfigured || !supabase) {
-        return {
-          success: false,
-          error: 'Supabase database is not configured. Please add NEXT_PUBLIC_SUPABASE_URL and key to .env.local.',
-        };
-      }
-
       const selectedFiles = files && files.length > 0 ? files : file ? [file] : [];
       if (selectedFiles.length === 0) {
         return { success: false, error: 'Please select a file to upload.' };
       }
 
-      onProgress?.('Validating document format and size...');
+      onProgress?.('Validating document format and size (max 25 MB)...');
       for (const f of selectedFiles) {
         const validation = validateDocumentFile(f);
         if (!validation.valid) {
@@ -303,7 +259,6 @@ export const DocumentProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         }
       }
 
-      // Check if all selected files are images
       const areAllImages = selectedFiles.every(
         (f) => f.type.startsWith('image/') || /\.(jpg|jpeg|png|webp|gif|bmp)$/i.test(f.name)
       );
@@ -316,21 +271,79 @@ export const DocumentProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       }
 
       try {
+        // Step 1: Compute binary SHA-256 hash for duplicate-file detection
+        onProgress?.('Checking for duplicate files across campus...');
+        const primaryFile = selectedFiles[0];
+        const fileHash = await computeFileSHA256(primaryFile);
+
+        // Step 2: Check for existing document with identical file_hash
+        const existingLocal = documents.find((d) => d.file_hash === fileHash);
+        if (existingLocal) {
+          const uploaderName = existingLocal.uploader?.full_name || 'another student';
+          return {
+            success: false,
+            isDuplicate: true,
+            duplicateDoc: existingLocal,
+            error: `Duplicate file detected: This exact file has already been uploaded as "${existingLocal.title}" by ${uploaderName}.`,
+          };
+        }
+
+        if (isSupabaseConfigured && supabase) {
+          try {
+            const fetchPromise = supabase
+              .from('documents')
+              .select(`
+                *,
+                uploader:profiles(*)
+              `)
+              .eq('file_hash', fileHash)
+              .maybeSingle();
+
+            const timeoutPromise = new Promise<{ data: null }>((resolve) =>
+              setTimeout(() => resolve({ data: null }), 1200)
+            );
+
+            const res = (await Promise.race([fetchPromise, timeoutPromise])) as {
+              data: any;
+            };
+
+            const existingDoc = res?.data;
+            if (existingDoc) {
+              const typedDoc: DocumentItem = {
+                ...(existingDoc as unknown as DocumentItem),
+                type: fromDbDocumentType(existingDoc.type),
+              };
+              const uploaderName = typedDoc.uploader?.full_name || 'another student';
+              return {
+                success: false,
+                isDuplicate: true,
+                duplicateDoc: typedDoc,
+                error: `Duplicate file detected: This exact file has already been uploaded as "${typedDoc.title}" by ${uploaderName}.`,
+              };
+            }
+          } catch {}
+        }
+
+        // Step 3: Handle formats (Images -> PDF via pdf-lib; PDFs & Office files uploaded as-is)
         let finalFile: File = selectedFiles[0];
-        let isConverted = false;
+        const rawExt = (primaryFile.name.split('.').pop() || 'pdf').toLowerCase();
+        let originalFormat = rawExt;
         let pageCount = 1;
+
+        const isAlreadyPdf = primaryFile.type === 'application/pdf' || rawExt === 'pdf';
+        const isOfficeDoc = ['docx', 'doc', 'pptx', 'ppt', 'xlsx', 'xls', 'odt', 'odp', 'ods', 'txt', 'csv'].includes(rawExt);
 
         if (areAllImages) {
           onProgress?.(
             selectedFiles.length > 1
               ? `Combining and converting ${selectedFiles.length} images into a single PDF...`
-              : 'Converting uploaded image to standardized PDF...'
+              : 'Converting image to standardized PDF...'
           );
           try {
             const conversion = await convertImagesToPdf(selectedFiles, onProgress);
             finalFile = conversion.pdfFile;
             pageCount = conversion.pageCount;
-            isConverted = true;
+            originalFormat = selectedFiles.length > 1 ? 'images' : rawExt || 'image';
           } catch (convErr) {
             console.error('Image to PDF conversion failed:', convErr);
             return {
@@ -338,102 +351,174 @@ export const DocumentProvider: React.FC<{ children: React.ReactNode }> = ({ chil
               error: 'Image conversion failed. Please try different images or upload a PDF.',
             };
           }
+        } else if (isAlreadyPdf) {
+          finalFile = primaryFile;
+          originalFormat = 'pdf';
+          try {
+            const { PDFDocument } = await import('pdf-lib');
+            const arrayBuffer = await finalFile.arrayBuffer();
+            const pdfDoc = await PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
+            pageCount = pdfDoc.getPageCount() || 1;
+          } catch {
+            pageCount = 1;
+          }
+        } else if (isOfficeDoc) {
+          // Native Office document upload (viewed directly via Microsoft Office Online Viewer)
+          finalFile = primaryFile;
+          originalFormat = rawExt;
+          pageCount = 1;
         }
 
-        const cleanFileName = isConverted
-          ? (selectedFiles.length > 1
-              ? `${title.trim().replace(/[^a-zA-Z0-9_-]/g, '_') || 'merged_document'}.pdf`
-              : `${selectedFiles[0].name.replace(/\.[^/.]+$/, '')}.pdf`)
-          : finalFile.name;
-        const fileExt = isConverted
-          ? 'pdf'
-          : (finalFile.name.split('.').pop()?.toLowerCase() || 'bin');
-        const storagePath = `${user.id}/${Date.now()}.${fileExt}`;
-        const contentType = isConverted
-          ? 'application/pdf'
-          : (finalFile.type || 'application/octet-stream');
+        // Step 4: Request short-lived presigned upload URL from Backblaze B2 endpoint
+        onProgress?.('Requesting secure Backblaze B2 direct upload URL...');
+        const baseName =
+          selectedFiles.length > 1
+            ? `${title.trim().replace(/[^a-zA-Z0-9_-]/g, '_') || 'merged_document'}`
+            : primaryFile.name.replace(/\.[^/.]+$/, '');
+        const cleanFileName = areAllImages ? `${baseName}.pdf` : `${baseName}.${rawExt}`;
 
+        const presignedRes = await fetch('/api/get-upload-url', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            fileName: cleanFileName,
+            fileSize: finalFile.size,
+            contentType: finalFile.type || undefined,
+            fileHash,
+          }),
+        });
 
-        if (!supabase) {
-          return { success: false, error: 'Supabase client is not available.' };
+        if (!presignedRes.ok) {
+          const errData = await presignedRes.json().catch(() => ({}));
+          throw new Error(errData.error || `Could not obtain upload URL (${presignedRes.status})`);
         }
 
-        onProgress?.('Uploading document to secure storage...');
-        const { error: uploadError } = await supabase.storage
-          .from('documents')
-          .upload(storagePath, finalFile, {
-            contentType,
-            upsert: true,
+        const { uploadUrl, key: b2Key, contentType: signedContentType } = await presignedRes.json();
+
+        // Step 5: Upload file to Backblaze B2 (Direct PUT with automatic server proxy fallback)
+        onProgress?.('Uploading document directly to Backblaze B2 cloud storage...');
+        let uploadSucceeded = false;
+
+        try {
+          const b2UploadRes = await fetch(uploadUrl, {
+            method: 'PUT',
+            body: finalFile,
+            headers: {
+              'Content-Type': signedContentType || finalFile.type || 'application/octet-stream',
+            },
           });
 
-        if (uploadError) {
-          console.error('Storage upload error:', uploadError);
-          return { success: false, error: `Storage upload failed: ${uploadError.message}` };
+          if (b2UploadRes.ok) {
+            uploadSucceeded = true;
+          } else {
+            console.warn(`Direct B2 PUT returned ${b2UploadRes.status}, attempting fallback relay...`);
+          }
+        } catch (directErr) {
+          console.warn('Direct B2 PUT encountered network/CORS error, activating server relay:', directErr);
         }
 
-        onProgress?.('Indexing document metadata and subject tags...');
-        // Insert document row with the real file_path already populated.
-        // The 'id' column is omitted so Postgres auto-generates a valid UUID via DEFAULT gen_random_uuid()
-        const { data: insertedDoc, error: insertError } = await supabase
-          .from('documents')
-          .insert({
-            title: title.trim(),
-            type,
-            semester,
-            subject: subject?.trim() || null,
-            uploader_id: user.id,
-            deadline: deadline || null,
-            file_path: storagePath,
-            file_name: cleanFileName,
-            file_size: finalFile.size,
-            file_type: contentType,
-            page_count: pageCount,
-          })
-          .select(`
-            *,
-            uploader:profiles(*)
-          `)
-          .single();
+        // Fallback: If direct PUT failed or was blocked by browser, upload via server proxy
+        if (!uploadSucceeded) {
+          onProgress?.('Finalizing upload via secure cloud storage relay...');
+          const formData = new FormData();
+          formData.append('file', finalFile);
+          formData.append('key', b2Key);
+          formData.append('contentType', signedContentType || finalFile.type || 'application/octet-stream');
 
-        if (insertError || !insertedDoc) {
-          console.error('Database insert failed, rolling back uploaded storage file:', insertError);
-          // Delete uploaded storage object so no orphaned file is left
-          await supabase.storage.from('documents').remove([storagePath]);
-          return { success: false, error: `Database insert failed: ${insertError?.message}` };
+          const proxyRes = await fetch('/api/upload-b2-proxy', {
+            method: 'POST',
+            body: formData,
+          });
+
+          if (!proxyRes.ok) {
+            const errData = await proxyRes.json().catch(() => ({}));
+            throw new Error(errData.error || 'Upload to Backblaze B2 storage failed.');
+          }
         }
 
-        // Insert document_pages for all pages to support AI search & direct page jumping
+        // Step 6: Insert document row into Supabase database (or fallback to local session)
+        onProgress?.('Confirming cloud storage and indexing document metadata...');
+        const dbDocType = toDbDocumentType(type);
+        const hasDeadline = type === 'Assignment' || type === 'Experiment';
+
+        let insertedDoc = null;
+        if (isSupabaseConfigured && supabase) {
+          try {
+            const { data, error: insertError } = await supabase
+              .from('documents')
+              .insert({
+                title: title.trim(),
+                type: dbDocType,
+                semester,
+                subject: subject?.trim() || null,
+                uploader_id: user.id,
+                deadline: hasDeadline ? deadline || null : null,
+                file_path: b2Key, // Backblaze B2 Resources-hub object key
+                file_name: cleanFileName,
+                file_size: finalFile.size,
+                file_type: originalFormat, // True stored format (docx, pptx, xlsx, pdf)
+                page_count: pageCount,
+                file_hash: fileHash,
+              })
+              .select(`
+                *,
+                uploader:profiles(*)
+              `)
+              .single();
+
+            if (insertError) {
+              throw new Error(`Failed to save document record: ${insertError.message}`);
+            }
+            if (data) {
+              insertedDoc = data;
+            }
+          } catch (dbErr: unknown) {
+            console.error('Supabase insert error:', dbErr);
+            throw dbErr;
+          }
+        } else {
+          throw new Error('Supabase client is not configured.');
+        }
+
+        const formattedDoc: DocumentItem = {
+          ...insertedDoc,
+          type: fromDbDocumentType(insertedDoc.type),
+          file_hash: insertedDoc.file_hash || fileHash,
+        };
+
+        // Step 7: Index document_pages for search
         const newPageRows = Array.from({ length: pageCount }, (_, idx) => ({
-          document_id: insertedDoc.id,
+          document_id: formattedDoc.id,
           page_number: idx + 1,
           content: `${title} - Page ${idx + 1} of ${pageCount}. Course: ${
             subject || 'General BTech'
           }. Category: ${type}, ${semester}. Uploaded by ${user.full_name}.`,
         }));
 
-        const { error: pageError } = await supabase.from('document_pages').insert(newPageRows);
-        if (pageError) {
-          console.warn('Warning: Failed to index document pages:', pageError);
+        if (supabase) {
+          try {
+            await supabase.from('document_pages').insert(newPageRows);
+          } catch {
+            // Page indexing error non-fatal
+          }
         }
 
         // Update local state
-        const formattedDoc = insertedDoc as DocumentItem;
-        setDocuments((prev) => [formattedDoc, ...prev]);
+        setDocuments((prev) => [formattedDoc, ...prev.filter((d) => d.id !== formattedDoc.id)]);
         setPages((prev) => [...prev, ...(newPageRows as DocumentPage[])]);
 
-        // Cleanup any legacy doc_... orphaned test uploads in the background
-        cleanupLegacyDocUploads(user.id);
-
-        return { success: true, documentId: insertedDoc.id };
-      } catch (err) {
-        console.error('Upload error in Supabase mode:', err);
+        return { success: true, documentId: formattedDoc.id };
+      } catch (err: unknown) {
+        console.error('Upload error in B2 pipeline:', err);
         return { success: false, error: err instanceof Error ? err.message : 'Upload failed' };
       }
     },
-    [user]
+    [user, documents]
   );
 
-  // Delete Document (Protected by RLS check)
+  // Delete Document (Calls /api/documents/[id] which deletes from B2 and Supabase)
   const deleteDocument = useCallback(
     async (documentId: string) => {
       if (!user) {
@@ -445,7 +530,6 @@ export const DocumentProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         return { success: false, error: 'Document not found.' };
       }
 
-      // RLS Check: Only uploader can delete
       if (docToDelete.uploader_id !== user.id) {
         return {
           success: false,
@@ -453,123 +537,58 @@ export const DocumentProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         };
       }
 
-      if (isSupabaseConfigured && supabase) {
-        try {
-          // Delete from storage
-          await supabase.storage.from('documents').remove([docToDelete.file_path]);
+      try {
+        const res = await fetch(`/api/documents/${documentId}`, {
+          method: 'DELETE',
+        });
 
-          // Delete from database (document_pages cascade automatically)
-          const { error } = await supabase.from('documents').delete().eq('id', documentId);
-          if (error) {
-            return { success: false, error: error.message };
-          }
-
-          pdfBlobUrlCache.delete(docToDelete.file_path);
-          setDocuments((prev) => prev.filter((d) => d.id !== documentId));
-          setPages((prev) => prev.filter((p) => p.document_id !== documentId));
-
-          return { success: true };
-        } catch (err) {
-          return { success: false, error: err instanceof Error ? err.message : 'Delete failed' };
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.error || `Delete failed with status ${res.status}`);
         }
-      } else {
-        return { success: false, error: 'Supabase database is not configured.' };
+
+        setDocuments((prev) => prev.filter((d) => d.id !== documentId));
+        setPages((prev) => prev.filter((p) => p.document_id !== documentId));
+
+        return { success: true };
+      } catch (err: unknown) {
+        return { success: false, error: err instanceof Error ? err.message : 'Delete failed' };
       }
     },
     [user, documents]
   );
 
-  // Get PDF / file Url for viewer (cached)
-  const getDocumentPdfUrl = useCallback(
-    async (doc: DocumentItem): Promise<string> => {
-      if (pdfBlobUrlCache.has(doc.file_path)) {
-        return pdfBlobUrlCache.get(doc.file_path)!;
-      }
-
-      if (doc.id.startsWith('demo-')) {
-        try {
-          const { PDFDocument, StandardFonts, rgb } = await import('pdf-lib');
-          const pdfDoc = await PDFDocument.create();
-          const timesRoman = await pdfDoc.embedFont(StandardFonts.Helvetica);
-          const page = pdfDoc.addPage([595.28, 841.89]);
-          page.drawText(doc.title, { x: 50, y: 780, size: 18, font: timesRoman, color: rgb(0.1, 0.1, 0.1) });
-          page.drawText(`Subject: ${doc.subject || 'General'} | Type: ${doc.type} | Semester: ${doc.semester}`, {
-            x: 50,
-            y: 750,
-            size: 11,
-            font: timesRoman,
-            color: rgb(0.4, 0.4, 0.4),
-          });
-          page.drawText('This is a demo document generated for verifying the built-in document viewer.', {
-            x: 50,
-            y: 700,
-            size: 12,
-            font: timesRoman,
-            color: rgb(0.2, 0.2, 0.2),
-          });
-          page.drawText('Try zooming in and out with Ctrl + Scroll Wheel, trackpad pinch, or the zoom controls above.', {
-            x: 50,
-            y: 670,
-            size: 12,
-            font: timesRoman,
-            color: rgb(0.2, 0.5, 0.8),
-          });
-          const pdfBytes = await pdfDoc.save();
-          const blob = new Blob([new Uint8Array(pdfBytes)], { type: 'application/pdf' });
-          const url = URL.createObjectURL(blob);
-          pdfBlobUrlCache.set(doc.file_path, url);
-          return url;
-        } catch {
-          return '';
-        }
-      }
-
-      if (isSupabaseConfigured && supabase) {
-        try {
-          const { data, error } = await supabase.storage
-            .from('documents')
-            .createSignedUrl(doc.file_path, 3600);
-
-          if (!error && data?.signedUrl) {
-            pdfBlobUrlCache.set(doc.file_path, data.signedUrl);
-            return data.signedUrl;
+  /**
+   * "Generate Fresh, Never Store" Pattern:
+   * Always requests a fresh signed URL from Backblaze B2 on-demand (30 minutes expiry).
+   * Never stores or caches signed URLs in client memory or database.
+   */
+  const createDocumentSignedUrl = useCallback(
+    async (filePath: string, expiresInSeconds: number = 1800): Promise<string> => {
+      try {
+        const res = await fetch(
+          `/api/documents/view-url?key=${encodeURIComponent(filePath)}&expiresIn=${expiresInSeconds}`
+        );
+        if (res.ok) {
+          const data = await res.json();
+          if (data.viewUrl) {
+            return data.viewUrl;
           }
-        } catch (err) {
-          console.warn('Could not create signed URL for document:', err);
         }
+      } catch (err) {
+        console.warn('Failed to fetch fresh presigned view URL from B2:', err);
       }
 
-      throw new Error(`Document file unavailable in storage: ${doc.file_name}`);
+      throw new Error(`Could not generate secure view URL for "${filePath}".`);
     },
     []
   );
 
-  // Generate short-lived signed URL (e.g. for Google Docs Viewer or temporary access)
-  const createDocumentSignedUrl = useCallback(
-    async (filePath: string, expiresInSeconds: number = 600): Promise<string> => {
-      if (filePath.startsWith('demo/')) {
-        if (filePath.endsWith('.pdf')) {
-          return 'https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf';
-        }
-        return 'https://calibre-ebook.com/downloads/demos/demo.docx';
-      }
-
-
-      if (isSupabaseConfigured && supabase) {
-        const { data, error } = await supabase.storage
-          .from('documents')
-          .createSignedUrl(filePath, expiresInSeconds);
-
-        if (!error && data?.signedUrl) {
-          return data.signedUrl;
-        }
-        if (error) {
-          throw new Error(error.message);
-        }
-      }
-      throw new Error('Supabase storage not configured');
+  const getDocumentPdfUrl = useCallback(
+    async (doc: DocumentItem): Promise<string> => {
+      return createDocumentSignedUrl(doc.file_path, 1800);
     },
-    []
+    [createDocumentSignedUrl]
   );
 
   return (
@@ -579,6 +598,7 @@ export const DocumentProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         pages,
         isLoading,
         isSupabaseConnected: isSupabaseConfigured,
+        storageStats,
         searchQuery,
         setSearchQuery,
         selectedType,

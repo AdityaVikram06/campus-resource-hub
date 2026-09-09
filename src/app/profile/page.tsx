@@ -13,6 +13,7 @@ import { UploadModal } from '@/components/UploadModal';
 import { AIAssistantModal } from '@/components/AIAssistantModal';
 import { DocumentCard } from '@/components/DocumentCard';
 import { CompleteProfileModal } from '@/components/CompleteProfileModal';
+import { StorageUsageIndicator } from '@/components/StorageUsageIndicator';
 import {
   User,
   Building,
@@ -197,7 +198,7 @@ export default function ProfilePage() {
   }
 
   return (
-    <div className="min-h-screen bg-[#FAFAF8] text-[#1C1D1F] flex flex-col selection:bg-[#60B5FF]/20 selection:text-[#1C1D1F]">
+    <div className="min-h-screen bg-[#FAFAF8] text-[#1C1D1F] flex flex-col overflow-x-hidden selection:bg-[#60B5FF]/20 selection:text-[#1C1D1F]">
       {/* Navigation */}
       <Navbar
         onOpenUpload={() => setIsUploadOpen(true)}
@@ -321,6 +322,9 @@ export default function ProfilePage() {
           </div>
         </div>
 
+        {/* Backblaze B2 Storage Usage Indicator */}
+        <StorageUsageIndicator variant="sidebar" />
+
         {/* Upload Breakdown Statistics */}
         <div>
           <div className="flex items-center justify-between mb-4">
@@ -411,6 +415,7 @@ export default function ProfilePage() {
       <UploadModal
         isOpen={isUploadOpen}
         onClose={() => setIsUploadOpen(false)}
+        onViewDocument={(doc) => setViewerDoc(doc)}
       />
 
       {/* AI Assistant Modal */}

@@ -197,7 +197,7 @@ Synthesize a direct, helpful academic answer.`;
     try {
       const genAI = new GoogleGenerativeAI(geminiKey.trim());
       const model = genAI.getGenerativeModel({
-        model: 'gemini-3.6-flash',
+        model: 'gemini-1.5-flash',
         systemInstruction: systemPrompt,
         generationConfig: {
           maxOutputTokens: 2048,
@@ -218,8 +218,19 @@ Synthesize a direct, helpful academic answer.`;
       };
 
       return NextResponse.json(responsePayload);
-    } catch (geminiErr) {
-      console.warn('Gemini API call failed, falling back to algorithmic synthesis:', geminiErr);
+    } catch (geminiErr: unknown) {
+      // Log the exact error response (status code, body, details) from the Gemini SDK call
+      const errObj = geminiErr as Record<string, unknown> | null;
+      const respObj = errObj?.response as Record<string, unknown> | undefined;
+      const statusCode = errObj?.status || errObj?.statusCode || respObj?.status || 'Unknown Status';
+      const errorBody = errObj?.errorDetails || respObj?.data || (geminiErr instanceof Error ? geminiErr.message : String(geminiErr));
+      
+      console.error('[Gemini API SDK Error]', {
+        statusCode,
+        errorBody,
+        message: geminiErr instanceof Error ? geminiErr.message : String(geminiErr),
+        stack: geminiErr instanceof Error ? geminiErr.stack : undefined,
+      });
 
       // Algorithmic Fallback Synthesis if Gemini API request fails
       let synthesizedAnswer = '';

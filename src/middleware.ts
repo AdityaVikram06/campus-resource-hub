@@ -4,16 +4,7 @@ import { createServerClient } from '@supabase/ssr';
 export async function middleware(request: NextRequest) {
   const { pathname, search } = request.nextUrl;
 
-  // Redirect /login or /signin aliases directly to /auth
-  if (pathname === '/login' || pathname === '/signin') {
-    const signInUrl = new URL('/auth', request.url);
-    if (search) {
-      signInUrl.search = search;
-    }
-    return NextResponse.redirect(signInUrl);
-  }
-
-  // Static files, OAuth callbacks, and internal Next.js assets are always public
+  // 1. Static files, OAuth callbacks, and internal Next.js assets are always public
   if (
     pathname.startsWith('/_next') ||
     pathname.startsWith('/api/auth') ||
@@ -25,6 +16,15 @@ export async function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
+  // 2. Redirect /login or /signin aliases directly to /auth (preserving destination query)
+  if (pathname === '/login' || pathname === '/signin') {
+    const signInUrl = new URL('/auth', request.url);
+    if (search) {
+      signInUrl.search = search;
+    }
+    return NextResponse.redirect(signInUrl);
+  }
+
   let response = NextResponse.next({
     request: {
       headers: request.headers,
@@ -33,20 +33,15 @@ export async function middleware(request: NextRequest) {
 
   let isAuthenticated = false;
 
-  // 1. Check local session cookie (supports demo mode & immediate fast response)
-  const campusSessionCookie = request.cookies.get('campus_auth_session');
-  if (campusSessionCookie && campusSessionCookie.value === 'active') {
-    isAuthenticated = true;
-  }
-
-  // 2. Check Supabase session cookies if configured
-  const DEFAULT_SUPABASE_URL = "https://blkmyaqmonpilrdnaeji.supabase.co";
-  const DEFAULT_SUPABASE_KEY = "sb_publishable_8oAmr8-V6X5JTNbg-PlNVg_Z24Pr41P";
+  // 3. Supabase session validation via @supabase/ssr
+  const DEFAULT_SUPABASE_URL = 'https://blkmyaqmonpilrdnaeji.supabase.co';
+  const DEFAULT_SUPABASE_KEY = 'sb_publishable_8oAmr8-V6X5JTNbg-PlNVg_Z24Pr41P';
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || DEFAULT_SUPABASE_URL;
   const supabaseAnonKey =
     process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
     DEFAULT_SUPABASE_KEY;
+
   const isSupabaseConfigured = Boolean(
     supabaseUrl &&
     supabaseAnonKey &&
@@ -54,7 +49,7 @@ export async function middleware(request: NextRequest) {
     !supabaseAnonKey.includes('your-supabase-anon-key')
   );
 
-  if (isSupabaseConfigured && supabaseUrl && supabaseAnonKey) {
+  if (isSupabaseConfigured) {
     try {
       const supabase = createServerClient(supabaseUrl, supabaseAnonKey, {
         cookies: {
@@ -75,6 +70,7 @@ export async function middleware(request: NextRequest) {
         },
       });
 
+      // Strict user validation from Supabase Auth server
       const {
         data: { user },
       } = await supabase.auth.getUser();
@@ -83,11 +79,12 @@ export async function middleware(request: NextRequest) {
         isAuthenticated = true;
       }
     } catch {
-      // If Supabase check fails, fallback to isAuthenticated from cookie
+      // In case of transient network error, fall back to checking auth token cookie
     }
   }
 
-  // Also check for any Supabase auth cookies present (e.g. sb-*-auth-token)
+
+  // Fallback: check presence of Supabase auth cookie (e.g. sb-*-auth-token)
   if (!isAuthenticated) {
     const hasSbCookie = request.cookies.getAll().some((cookie) =>
       cookie.name.startsWith('sb-') && cookie.name.endsWith('-auth-token')
@@ -98,8 +95,9 @@ export async function middleware(request: NextRequest) {
   }
 
   const isAuthRoute = pathname.startsWith('/auth') && !pathname.startsWith('/auth/callback');
+  const isOnboardingRoute = pathname === '/onboarding';
 
-  // If user is already authenticated and visits /auth, redirect to dashboard
+  // 4. Authenticated user visiting /auth -> redirect straight to dashboard
   if (isAuthenticated && isAuthRoute) {
     const redirectUrl = request.nextUrl.clone();
     redirectUrl.pathname = '/';
@@ -107,9 +105,9 @@ export async function middleware(request: NextRequest) {
     return NextResponse.redirect(redirectUrl);
   }
 
-  // If user is NOT authenticated and trying to access a protected route
-  if (!isAuthenticated && !isAuthRoute) {
-    // Preserve full target destination including query parameters (e.g. ?doc=123)
+  // 5. Unauthenticated user accessing ANY protected route (dashboard, upload, profile, viewer, etc.)
+  // Only /auth, /login, /onboarding (mid-flow), and static assets are reachable without a session
+  if (!isAuthenticated && !isAuthRoute && !isOnboardingRoute) {
     const targetPath = pathname + search;
     const signInUrl = new URL('/auth', request.url);
     if (targetPath && targetPath !== '/') {
@@ -124,11 +122,7 @@ export async function middleware(request: NextRequest) {
 export const config = {
   matcher: [
     /*
-     * Match all request paths except:
-     * - _next/static (static files)
-     * - _next/image (image optimization files)
-     * - favicon.ico, favicon.svg
-     * - public folder images / fonts
+     * Match all request paths except static files & images:
      */
     '/((?!_next/static|_next/image|favicon\\.ico|favicon\\.svg|.*\\.(?:svg|png|jpg|jpeg|gif|webp|woff2?)$).*)',
   ],

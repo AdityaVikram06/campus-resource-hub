@@ -1,13 +1,14 @@
 'use client';
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef } from 'react';
 import Link from 'next/link';
-import { DocumentType, Semester } from '@/types';
+import { DocumentItem, DocumentType, Semester } from '@/types';
 import { useDocuments } from '@/context/DocumentContext';
 import { useAuth } from '@/context/AuthContext';
 import { validateDocumentFile } from '@/lib/pdfConverter';
 import { compressImage } from '@/lib/imageCompressor';
 import { useToast } from '@/context/ToastContext';
+import { StorageUsageIndicator } from '@/components/StorageUsageIndicator';
 import {
   X,
   UploadCloud,
@@ -18,12 +19,14 @@ import {
   Sparkles,
   CheckCircle2,
   Loader2,
+  ExternalLink,
 } from 'lucide-react';
 
 interface UploadModalProps {
   isOpen: boolean;
   onClose: () => void;
   onSuccess?: () => void;
+  onViewDocument?: (doc: DocumentItem) => void;
 }
 
 const DOCUMENT_TYPES: DocumentType[] = [
@@ -45,23 +48,23 @@ const SEMESTERS: Semester[] = [
   'Sem 8',
 ];
 
-export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuccess }) => {
+export const UploadModal: React.FC<UploadModalProps> = ({
+  isOpen,
+  onClose,
+  onSuccess,
+  onViewDocument,
+}) => {
   const { uploadDocument } = useDocuments();
   const { user } = useAuth();
   const { showToast } = useToast();
 
   const [title, setTitle] = useState('');
   const [type, setType] = useState<DocumentType>('Notes');
-  const [semester, setSemester] = useState<Semester | ''>(user?.semester || '');
+  const [semesterOverride, setSemesterOverride] = useState<Semester | ''>('');
+  const semester = semesterOverride || user?.semester || '';
+  const setSemester = (s: Semester | '') => setSemesterOverride(s);
   const [subject, setSubject] = useState('');
   const [deadline, setDeadline] = useState('');
-
-  // Keep semester synced with user profile if it loads later
-  useEffect(() => {
-    if (user?.semester && !semester) {
-      setSemester(user.semester);
-    }
-  }, [user?.semester, semester]);
 
   const [files, setFiles] = useState<File[]>([]);
   const [isMultiImage, setIsMultiImage] = useState(false);
@@ -73,6 +76,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [progressStatus, setProgressStatus] = useState<string>('');
   const [generalError, setGeneralError] = useState<string | null>(null);
+  const [duplicateDoc, setDuplicateDoc] = useState<DocumentItem | null>(null);
   const [uploadSuccess, setUploadSuccess] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -83,6 +87,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
 
   const handleFilesSelection = async (selectedList: File[]) => {
     setFileError(null);
+    setDuplicateDoc(null);
     if (!selectedList || selectedList.length === 0) return;
 
     // Validate each file
@@ -149,6 +154,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setGeneralError(null);
+    setDuplicateDoc(null);
 
     if (!title.trim()) {
       setGeneralError('Please enter a descriptive document title.');
@@ -171,7 +177,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
     }
 
     setIsSubmitting(true);
-    setProgressStatus('Initializing upload...');
+    setProgressStatus('Preparing upload...');
 
     try {
       const result = await uploadDocument({
@@ -185,8 +191,14 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
       });
 
       if (!result.success) {
-        setGeneralError(result.error || 'Upload failed. Please check file format and try again.');
-        showToast(result.error || 'Upload failed. Please try again.', 'error');
+        if (result.isDuplicate && result.duplicateDoc) {
+          setDuplicateDoc(result.duplicateDoc);
+          setGeneralError(null);
+          showToast('Duplicate document detected', 'info');
+        } else {
+          setGeneralError(result.error || 'Upload failed. Please check file format and try again.');
+          showToast(result.error || 'Upload failed. Please try again.', 'error');
+        }
         setIsSubmitting(false);
       } else {
         setUploadSuccess(true);
@@ -216,6 +228,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
     setIsOfficeFile(false);
     setFileError(null);
     setGeneralError(null);
+    setDuplicateDoc(null);
     setUploadSuccess(false);
     onClose();
   };
@@ -266,6 +279,49 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
           /* Upload Form */
           <form onSubmit={handleSubmit} className="p-6 space-y-4">
             
+            {duplicateDoc && (
+              <div className="p-4 rounded-2xl bg-[#FFE588]/40 border border-[#F79D65]/40 text-[#1C1D1F] space-y-2.5 animate-in fade-in duration-200">
+                <div className="flex items-start gap-2.5">
+                  <AlertCircle className="w-5 h-5 text-[#F79D65] flex-shrink-0 mt-0.5" />
+                  <div>
+                    <h4 className="font-bold text-xs text-[#1C1D1F] uppercase tracking-wider">
+                      Duplicate File Detected
+                    </h4>
+                    <p className="text-xs text-[#64666E] mt-0.5 leading-relaxed">
+                      This exact file has already been uploaded as{' '}
+                      <span className="font-bold text-[#1C1D1F]">&ldquo;{duplicateDoc.title}&rdquo;</span> by{' '}
+                      <span className="font-bold text-[#1C1D1F]">
+                        {duplicateDoc.uploader?.full_name || 'another student'}
+                      </span>.
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 pt-1 pl-7">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onViewDocument?.(duplicateDoc);
+                      handleClose();
+                    }}
+                    className="px-3.5 py-1.5 rounded-xl bg-[#60B5FF] hover:bg-[#60B5FF]/90 text-white font-bold text-xs transition-colors cursor-pointer inline-flex items-center gap-1.5 shadow-xs"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" />
+                    <span>View Existing Document</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDuplicateDoc(null);
+                      setFiles([]);
+                    }}
+                    className="px-3 py-1.5 rounded-xl bg-white border border-[#E8E8E3] hover:bg-[#FAFAF8] text-[#64666E] font-semibold text-xs transition-colors cursor-pointer"
+                  >
+                    Choose Different File
+                  </button>
+                </div>
+              </div>
+            )}
+
             {generalError && (
               <div className="p-3 rounded-xl bg-[#F35252]/10 border border-[#F35252]/30 flex items-start gap-2.5 text-xs text-[#F35252] font-semibold">
                 <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5 text-[#F35252]" />
@@ -288,6 +344,9 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
                 </div>
               </div>
             )}
+
+            {/* Real-time Backblaze B2 Storage Meter (Circular Indicator) */}
+            <StorageUsageIndicator variant="modal" />
 
             {/* Document Title */}
             <div>
@@ -418,7 +477,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
                   id="upload-file-input"
                   type="file"
                   multiple
-                  accept=".pdf,image/png,image/jpeg,image/webp,.docx,.doc,.pptx,.ppt,.xlsx,.xls,.txt"
+                  accept=".pdf,image/png,image/jpeg,image/webp,.docx,.doc,.pptx,.ppt,.xlsx,.xls"
                   className="hidden"
                   onChange={(e) => {
                     if (e.target.files && e.target.files.length > 0) {
@@ -427,7 +486,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
                   }}
                 />
 
-                {files.length > 1 ? (
+                {files.length > 1 && isMultiImage ? (
                   /* Multi-Image Selected Preview */
                   <div className="flex flex-col items-center gap-2">
                     <div className="w-11 h-11 rounded-full bg-[#5EF2D5]/20 text-[#1C1D1F] border border-[#5EF2D5] flex items-center justify-center">
@@ -473,12 +532,12 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
                       {(files[0].size / (1024 * 1024)).toFixed(2)} MB
                       {isImageFile && (
                         <span className="ml-2 text-[#60B5FF] font-semibold inline-flex items-center gap-1">
-                          <Sparkles className="w-3 h-3 text-[#60B5FF]" /> Auto-converts to PDF
+                          <Sparkles className="w-3 h-3 text-[#60B5FF]" /> Auto-converts to PDF (pdf-lib)
                         </span>
                       )}
                       {isOfficeFile && (
-                        <span className="ml-2 text-[#60B5FF] font-semibold inline-flex items-center gap-1">
-                          <FileText className="w-3 h-3 text-[#60B5FF]" /> Office Preview Enabled
+                        <span className="ml-2 text-indigo-600 font-semibold inline-flex items-center gap-1">
+                          <FileText className="w-3 h-3 text-indigo-600" /> Direct Office View (MS Office Online)
                         </span>
                       )}
                     </div>
@@ -493,7 +552,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({ isOpen, onClose, onSuc
                       Drag and drop your file(s) here, or <span className="text-[#60B5FF] underline">browse</span>
                     </div>
                     <div className="text-[11px] text-[#64666E] font-normal">
-                      PDF, DOCX, PPTX, XLSX, or multiple images (Max 20MB)
+                      PDF, DOCX, PPTX, XLSX, or multiple images (Max 25MB). Formats like .zip, .exe, .mp4 are rejected.
                     </div>
                   </div>
                 )}

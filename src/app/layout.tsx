@@ -5,6 +5,7 @@ import { Providers } from '@/components/Providers';
 
 const inter = Inter({
   subsets: ['latin'],
+  weight: ['400', '500', '600', '700'],
   display: 'swap',
   variable: '--font-inter',
 });
@@ -19,7 +20,7 @@ const poppins = Poppins({
 export const metadata: Metadata = {
   title: 'Campus Document Hub | B.Tech Academic Notes, Assignments & Exam Papers',
   description:
-    'A full-stack collaborative repository for BTech students to upload, browse, and search verified lecture notes, lab experiments, assignments, and midsem exam papers with Claude AI-assisted page retrieval.',
+    'A full-stack collaborative repository for BTech students to upload, browse, and search verified lecture notes, lab experiments, assignments, and midsem exam papers with Backblaze B2 storage and Gemini AI-assisted retrieval.',
   keywords: [
     'BTech notes',
     'campus document hub',
@@ -27,7 +28,8 @@ export const metadata: Metadata = {
     'lab experiments',
     'midsem question papers',
     'exam papers',
-    'Claude AI search',
+    'Gemini AI search',
+    'Backblaze B2 storage',
   ],
   icons: {
     icon: '/favicon.svg',

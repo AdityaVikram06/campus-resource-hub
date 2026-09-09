@@ -52,7 +52,7 @@ function AuthContent() {
   const { login, signup, loginWithGoogle, isSupabaseConnected } = useAuth();
   const { showToast } = useToast();
 
-  const [mode, setMode] = useState<'login' | 'signup'>('signup');
+  const [mode, setMode] = useState<'login' | 'signup'>('login');
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
@@ -207,6 +207,7 @@ function AuthContent() {
               Sign In
             </button>
           </div>
+
 
           {errorMessage && (
             <div className="p-3 rounded-xl bg-[#F35252]/10 border border-[#F35252]/30 flex items-start gap-2 text-xs text-[#F35252] font-bold">

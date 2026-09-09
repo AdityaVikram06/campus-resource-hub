@@ -30,9 +30,7 @@ const LOCAL_STORAGE_USER_KEY = 'campus_hub_active_user';
 const SESSION_COOKIE_NAME = 'campus_auth_session';
 
 function setSessionCookie() {
-  if (typeof document !== 'undefined') {
-    document.cookie = `${SESSION_COOKIE_NAME}=active; path=/; max-age=604800; SameSite=Lax`;
-  }
+  // Legacy cookie setting deprecated - Supabase Auth manages secure SSR cookies directly
 }
 
 function clearSessionCookie() {
@@ -49,6 +47,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   useEffect(() => {
     async function initAuth() {
       setIsLoading(true);
+
 
       if (isSupabaseConfigured && supabase) {
         try {
@@ -165,10 +164,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, []);
 
+
   // Login
   const login = useCallback(async (email: string, password: string) => {
     setIsLoading(true);
     try {
+
       if (!isSupabaseConfigured || !supabase) {
         setIsLoading(false);
         return {
@@ -258,8 +259,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           .upload(filePath, params.avatarFile, { upsert: true });
 
         if (!uploadErr) {
-          const { data: pubUrl } = supabase.storage.from('avatars').getPublicUrl(filePath);
-          avatarUrl = pubUrl.publicUrl;
+          const { data: signedData } = await supabase.storage
+            .from('avatars')
+            .createSignedUrl(filePath, 315360000); // 10 years signed access
+          avatarUrl = signedData?.signedUrl || null;
         }
       }
 
@@ -352,8 +355,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           .upload(filePath, newAvatarFile, { upsert: true });
 
         if (!uploadErr) {
-          const { data: pubUrl } = supabase.storage.from('avatars').getPublicUrl(filePath);
-          avatarUrl = pubUrl.publicUrl;
+          const { data: signedData } = await supabase.storage
+            .from('avatars')
+            .createSignedUrl(filePath, 315360000); // 10 years signed access
+          avatarUrl = signedData?.signedUrl || null;
         }
       }
 

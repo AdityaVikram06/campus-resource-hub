@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { DocumentItem } from '@/types';
 import { useDocuments } from '@/context/DocumentContext';
 import { useToast } from '@/context/ToastContext';
@@ -8,19 +8,43 @@ import {
   X,
   Download,
   Share2,
-  ExternalLink,
   FileText,
   User,
   AlertCircle,
   Loader2,
   Bookmark,
-  RefreshCw,
+  ExternalLink,
 } from 'lucide-react';
 
 interface DocumentViewerModalProps {
   document: DocumentItem | null;
   initialPage?: number;
   onClose: () => void;
+}
+
+interface AdobeDCViewInstance {
+  previewFile: (
+    fileConfig: {
+      content: { location: { url: string } };
+      metaData: { fileName: string };
+    },
+    viewerConfig: Record<string, unknown>
+  ) => Promise<AdobeViewerInstance>;
+}
+
+interface AdobeViewerInstance {
+  getAPIs?: () => Promise<{
+    gotoLocation?: (pageNumber: number) => void;
+  }>;
+}
+
+declare global {
+  interface Window {
+    AdobeDC?: {
+      View: new (config: { clientId: string; divId: string }) => AdobeDCViewInstance;
+    };
+    adobe_dc_view_sdk?: unknown;
+  }
 }
 
 export const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
@@ -33,30 +57,71 @@ export const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
 
   const [signedUrl, setSignedUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
-  const [iframeLoading, setIframeLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
-  const [iframeKey, setIframeKey] = useState<number>(0);
+  const [sdkReady, setSdkReady] = useState<boolean>(
+    () => typeof window !== 'undefined' && Boolean(window.AdobeDC)
+  );
 
-  // Generate short-lived signed URL whenever doc changes
+  const containerId = 'adobe-pdf-view-container';
+  const adobeViewerRef = useRef<AdobeViewerInstance | null>(null);
+
+  // Determine viewer engine based on file format
+  const rawExt = (doc?.file_name.split('.').pop() || doc?.file_type || '').toLowerCase();
+  const isOfficeDoc = ['docx', 'doc', 'pptx', 'ppt', 'xlsx', 'xls'].includes(rawExt);
+  const isPdf = !isOfficeDoc;
+
+  // Load Adobe PDF Embed API script dynamically only for PDF documents
+  useEffect(() => {
+    if (typeof window === 'undefined' || !isPdf) return;
+
+    if (window.AdobeDC) {
+      setSdkReady(true);
+      return;
+    }
+
+    const handleSdkReady = () => {
+      setSdkReady(true);
+    };
+
+    document.addEventListener('adobe_dc_view_sdk.ready', handleSdkReady, { once: true });
+
+    const existingScript = document.getElementById('adobe-pdf-embed-sdk');
+    if (!existingScript) {
+      const script = document.createElement('script');
+      script.id = 'adobe-pdf-embed-sdk';
+      script.src = 'https://acrobatservices.adobe.com/view-sdk/viewer.js';
+      script.async = true;
+      document.head.appendChild(script);
+    }
+
+    return () => {
+      document.removeEventListener('adobe_dc_view_sdk.ready', handleSdkReady);
+    };
+  }, [isPdf]);
+
+  /**
+   * "Generate Fresh, Never Store" Pattern:
+   * Generate a fresh signed URL from Backblaze B2 the moment DocumentViewerModal opens,
+   * authenticated against the user's session (1800s / 30 minutes expiry).
+   */
   useEffect(() => {
     let isCancelled = false;
 
     async function prepareViewerUrl() {
       if (!doc) return;
       setLoading(true);
-      setIframeLoading(true);
       setError(null);
 
       try {
-        // Request short-lived signed URL for Google Docs Viewer
-        const url = await createDocumentSignedUrl(doc.file_path, 600);
+        const freshUrl = await createDocumentSignedUrl(doc.file_path, 1800);
         if (!isCancelled) {
-          setSignedUrl(url);
-          setLoading(false);
+          setSignedUrl(freshUrl);
+          // For office docs, iframe onLoad will turn off loading
+          // For PDFs, previewPromise.then will turn off loading
         }
       } catch (err) {
         if (!isCancelled) {
-          console.error('Failed to create signed URL for document:', err);
+          console.error('Failed to create fresh signed URL for document:', err);
           setError(
             err instanceof Error
               ? err.message
@@ -74,6 +139,74 @@ export const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
     };
   }, [doc, createDocumentSignedUrl]);
 
+  // Initialize Adobe PDF Embed API viewer for PDF documents
+  useEffect(() => {
+    if (!isPdf || !sdkReady || !signedUrl || !doc) return;
+
+    const clientId =
+      process.env.NEXT_PUBLIC_ADOBE_PDF_EMBED_CLIENT_ID ||
+      process.env.NEXT_PUBLIC_ADOBE_CLIENT_ID;
+
+    if (!clientId) {
+      console.error('Adobe PDF Embed API Client ID is not configured (NEXT_PUBLIC_ADOBE_PDF_EMBED_CLIENT_ID).');
+      setError('Adobe PDF Embed API Client ID is not configured. You can download the PDF directly.');
+      return;
+    }
+
+    const container = document.getElementById(containerId);
+    if (!container) return;
+
+    // Reset container contents
+    container.innerHTML = '';
+
+    try {
+      if (!window.AdobeDC) return;
+
+      const adobeDCView = new window.AdobeDC.View({
+        clientId,
+        divId: containerId,
+      });
+
+      const previewPromise = adobeDCView.previewFile(
+        {
+          content: { location: { url: signedUrl } },
+          metaData: { fileName: doc.file_name || `${doc.title}.pdf` },
+        },
+        {
+          embedMode: 'SIZED_CONTAINER',
+          showAnnotationTools: false,
+          showLeftHandPanel: true,
+          showDownloadPDF: true,
+          showPrintPDF: true,
+        }
+      );
+
+      previewPromise
+        .then((viewer: AdobeViewerInstance) => {
+          setLoading(false);
+          adobeViewerRef.current = viewer;
+          if (initialPage > 1 && viewer.getAPIs) {
+            viewer.getAPIs().then((apis) => {
+              if (apis && typeof apis.gotoLocation === 'function') {
+                apis.gotoLocation(initialPage);
+              }
+            });
+          }
+        })
+        .catch((renderErr: unknown) => {
+          setLoading(false);
+          console.error('Adobe PDF Embed API previewFile error:', renderErr);
+          setError('Adobe PDF Embed API was unable to render the document. You can download the PDF directly.');
+        });
+    } catch (viewInitErr: unknown) {
+      setLoading(false);
+      console.error('Failed to initialize AdobeDC.View:', viewInitErr);
+      setTimeout(() => {
+        setError('Could not initialize Adobe PDF Embed Viewer.');
+      }, 0);
+    }
+  }, [isPdf, sdkReady, signedUrl, doc, initialPage]);
+
   // Handle keyboard shortcuts (Escape to close)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -85,7 +218,7 @@ export const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [onClose]);
 
-  // Handle document download fallback
+  // Handle document download (works for both PDF and Office formats)
   const handleDownload = useCallback(() => {
     if (!signedUrl || !doc) {
       showToast('Document link is still preparing, please wait...', 'info');
@@ -93,13 +226,13 @@ export const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
     }
     const a = window.document.createElement('a');
     a.href = signedUrl;
-    a.download = doc.file_name || `${doc.title}.pdf`;
+    a.download = doc.file_name || `${doc.title}.${rawExt || 'pdf'}`;
     a.target = '_blank';
     window.document.body.appendChild(a);
     a.click();
     window.document.body.removeChild(a);
     showToast(`Downloading ${doc.file_name || doc.title}...`, 'success');
-  }, [signedUrl, doc, showToast]);
+  }, [signedUrl, doc, rawExt, showToast]);
 
   // Handle share link
   const handleShare = useCallback(async () => {
@@ -109,30 +242,23 @@ export const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
       try {
         await navigator.share({
           title: doc.title,
-          text: `Check out ${doc.title} on Campus Resource Hub`,
+          text: `Check out "${doc.title}" on Campus Document Hub:`,
           url: shareUrl,
         });
-        return;
       } catch {
-        // User cancelled or share failed, fallback to clipboard
+        // User cancelled share
       }
+    } else {
+      await navigator.clipboard.writeText(shareUrl);
+      showToast('Document link copied to clipboard!', 'success');
     }
-    navigator.clipboard.writeText(shareUrl);
-    showToast('Link copied to clipboard!', 'success');
   }, [doc, showToast]);
 
   if (!doc) return null;
 
-  const isBlobOrData = signedUrl ? signedUrl.startsWith('blob:') || signedUrl.startsWith('data:') : false;
-  // Use encodeURIComponent on signedUrl when embedding in Google Docs Viewer to preserve token and exp query params
-  const viewerUrl = signedUrl
-    ? isBlobOrData
-      ? signedUrl
-      : `https://docs.google.com/viewer?url=${encodeURIComponent(signedUrl)}&embedded=true`
-    : '';
-
   return (
     <div
+      id="document-viewer-modal-backdrop"
       className="fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4 md:p-6 animate-in fade-in duration-200"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
@@ -159,9 +285,14 @@ export const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                 <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-[#FAFAF8] text-[#64666E] border border-[#E8E8E3]">
                   {doc.semester}
                 </span>
-                {doc.page_count > 0 && (
-                  <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-slate-100 text-slate-700">
-                    {doc.page_count} {doc.page_count === 1 ? 'page' : 'pages'}
+                {isOfficeDoc ? (
+                  <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200 inline-flex items-center gap-1">
+                    <ExternalLink className="w-2.5 h-2.5" />
+                    Microsoft Office Online
+                  </span>
+                ) : (
+                  <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-red-50 text-red-700 border border-red-200">
+                    Adobe PDF Embed
                   </span>
                 )}
               </div>
@@ -178,37 +309,25 @@ export const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                     <span className="font-medium">{doc.subject}</span>
                   </>
                 )}
+                <span>•</span>
+                <span className="uppercase font-mono text-[10px]">Format: {rawExt || doc.file_type || 'PDF'}</span>
               </div>
             </div>
           </div>
 
           {/* Action Toolbar */}
           <div className="flex items-center gap-1.5 flex-shrink-0">
-            {/* Download Fallback Button */}
+            {/* Download Button (Visible for both viewer types) */}
             <button
               id="viewer-download-btn"
               type="button"
               onClick={handleDownload}
-              title="Download original file"
+              title={`Download original ${rawExt.toUpperCase()} file`}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-[#E8E8E3] bg-[#FFFFFF] hover:bg-[#FAFAF8] text-[#1C1D1F] text-xs font-bold transition-all shadow-xs cursor-pointer"
             >
               <Download className="w-3.5 h-3.5 text-[#60B5FF]" />
               <span className="hidden sm:inline">Download</span>
             </button>
-
-            {/* Open in New Window */}
-            {signedUrl && (
-              <a
-                id="viewer-open-external-btn"
-                href={viewerUrl || signedUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                title="Open in new browser tab"
-                className="p-1.5 rounded-xl border border-[#E8E8E3] bg-[#FFFFFF] hover:bg-[#FAFAF8] text-[#64666E] hover:text-[#1C1D1F] transition-all cursor-pointer"
-              >
-                <ExternalLink className="w-4 h-4" />
-              </a>
-            )}
 
             {/* Share Link */}
             <button
@@ -234,8 +353,8 @@ export const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
           </div>
         </div>
 
-        {/* AI Match Context Callout (if opened at a specific page) */}
-        {initialPage > 1 && (
+        {/* AI Match Context Callout (if opened at a specific page for PDFs) */}
+        {isPdf && initialPage > 1 && (
           <div className="bg-sky-50 border-b border-sky-200 px-4 py-2 flex items-center justify-between gap-3 text-xs text-sky-900">
             <div className="flex items-center gap-2">
               <Bookmark className="w-4 h-4 text-sky-600 flex-shrink-0" />
@@ -243,7 +362,7 @@ export const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                 Match found on Page {initialPage}
               </span>
               <span className="text-sky-700 hidden sm:inline">
-                — Google Docs Viewer opens at page 1; please scroll to page {initialPage} below to view the match.
+                — Document viewer opened directly at relevant page.
               </span>
             </div>
             <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-sky-200 text-sky-800">
@@ -252,40 +371,13 @@ export const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
           </div>
         )}
 
-        {/* Fallback & Reliability Status Bar */}
-        <div className="bg-amber-50/70 border-b border-amber-200/60 px-4 py-1.5 flex items-center justify-between text-[11px] text-amber-900 gap-2 flex-wrap">
-          <div className="flex items-center gap-1.5">
-            <AlertCircle className="w-3.5 h-3.5 text-amber-600 flex-shrink-0" />
-            <span>
-              Preview powered by {isBlobOrData ? 'Integrated Viewer' : 'Google Docs Viewer'}. If loading is slow or fails, use the{' '}
-              <button
-                type="button"
-                onClick={handleDownload}
-                className="font-bold underline text-amber-950 hover:text-amber-800 cursor-pointer"
-              >
-                Download
-              </button>{' '}
-              button.
-            </span>
-          </div>
-          <button
-            type="button"
-            onClick={() => setIframeKey((k) => k + 1)}
-            className="flex items-center gap-1 text-[11px] text-amber-800 hover:text-amber-950 font-bold cursor-pointer"
-            title="Reload preview"
-          >
-            <RefreshCw className="w-3 h-3" />
-            <span>Reload Preview</span>
-          </button>
-        </div>
-
         {/* Viewer Content Area */}
         <div className="flex-1 relative bg-slate-100 overflow-hidden flex items-center justify-center">
           {loading && (
             <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-white gap-3">
               <Loader2 className="w-8 h-8 text-[#60B5FF] animate-spin" />
               <p className="text-xs font-bold text-[#64666E]">
-                Generating secure access link...
+                Preparing secure document preview...
               </p>
             </div>
           )}
@@ -303,40 +395,31 @@ export const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
                 className="mt-2 flex items-center gap-2 px-4 py-2 rounded-xl bg-[#60B5FF] text-white font-bold text-xs shadow-xs hover:bg-[#4ea5ef] transition-all cursor-pointer"
               >
                 <Download className="w-4 h-4" />
-                <span>Download Document File</span>
+                <span>Download {rawExt.toUpperCase()} File</span>
               </button>
             </div>
           )}
 
-          {!loading && !error && viewerUrl && (
-            <div className="w-full h-full relative">
-              {iframeLoading && (
-                <div className="absolute inset-0 flex flex-col items-center justify-center bg-white/90 z-10 gap-2">
-                  <Loader2 className="w-7 h-7 text-[#60B5FF] animate-spin" />
-                  <p className="text-xs font-semibold text-[#64666E]">
-                    {isBlobOrData
-                      ? 'Loading document preview...'
-                      : 'Loading document in Google Docs Viewer...'}
-                  </p>
-                </div>
-              )}
-              <iframe
-                key={iframeKey}
-                id="google-docs-viewer-frame"
-                src={viewerUrl}
-                title={doc.title}
-                className="w-full h-full border-0"
-                onLoad={() => setIframeLoading(false)}
-                onError={() => {
-                  setIframeLoading(false);
-                  setError(
-                    isBlobOrData
-                      ? 'Unable to preview this file in browser. Please use the Download button.'
-                      : 'Google Docs Viewer was unable to embed this file. Please use the Download button.'
-                  );
-                }}
-              />
-            </div>
+          {/* Branch 1: Microsoft Office Online Viewer for Office documents (docx, pptx, xlsx) */}
+          {isOfficeDoc && signedUrl && !error && (
+            <iframe
+              src={`https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(signedUrl)}`}
+              width="100%"
+              height="100%"
+              frameBorder="0"
+              className="w-full h-full border-0 bg-white"
+              title={doc.title}
+              onLoad={() => setLoading(false)}
+            />
+          )}
+
+          {/* Branch 2: Adobe PDF Embed API for PDF documents */}
+          {isPdf && !error && (
+            <div
+              id={containerId}
+              className="w-full h-full"
+              style={{ width: '100%', height: '100%' }}
+            />
           )}
         </div>
       </div>

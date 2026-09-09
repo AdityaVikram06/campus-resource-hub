@@ -11,6 +11,7 @@ import { UploadModal } from '@/components/UploadModal';
 import { DocumentViewerModal } from '@/components/DocumentViewerModal';
 import { AIAssistantModal } from '@/components/AIAssistantModal';
 import { CompleteProfileModal } from '@/components/CompleteProfileModal';
+import { DocumentCardSkeleton } from '@/components/DocumentCardSkeleton';
 import { Navbar } from '@/components/Navbar';
 import { useAuth } from '@/context/AuthContext';
 import {
@@ -53,6 +54,7 @@ function DashboardContent() {
   const searchParams = useSearchParams();
   const {
     documents,
+    isLoading,
     searchQuery,
     setSearchQuery,
     selectedType,
@@ -171,7 +173,7 @@ function DashboardContent() {
   };
 
   return (
-    <div className="min-h-screen bg-[#FAFAF8] text-[#1C1D1F] flex flex-col selection:bg-[#60B5FF]/20 selection:text-[#1C1D1F]">
+    <div className="min-h-screen bg-[#FAFAF8] text-[#1C1D1F] flex flex-col overflow-x-hidden selection:bg-[#60B5FF]/20 selection:text-[#1C1D1F]">
       {/* Navigation */}
       <Navbar
         onOpenUpload={() => setIsUploadOpen(true)}
@@ -258,7 +260,8 @@ function DashboardContent() {
             </div>
           </div>
         )}
-        
+
+
         {/* Search, Sort & Filters Toolbar */}
         <div className="bg-[#FFFFFF] rounded-2xl p-4 border border-[#E8E8E3] shadow-xs space-y-4">
           
@@ -383,7 +386,13 @@ function DashboardContent() {
         </div>
 
         {/* Documents Grid / Table */}
-        {totalFilteredCount === 0 ? (
+        {isLoading ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+            {Array.from({ length: 6 }).map((_, idx) => (
+              <DocumentCardSkeleton key={`doc-skeleton-${idx}`} />
+            ))}
+          </div>
+        ) : totalFilteredCount === 0 ? (
           <div className="py-16 text-center bg-[#FFFFFF] rounded-2xl border border-[#E8E8E3] p-8">
             <div className="w-16 h-16 mx-auto rounded-2xl bg-[#FFE588]/30 text-[#1C1D1F] border border-[#FFE588] flex items-center justify-center mb-3">
               <FileText className="w-8 h-8 text-[#1C1D1F]" />
@@ -525,6 +534,7 @@ function DashboardContent() {
       <UploadModal
         isOpen={isUploadOpen}
         onClose={() => setIsUploadOpen(false)}
+        onViewDocument={(doc) => handleOpenViewer(doc)}
       />
 
       {/* AI Assistant Modal */}

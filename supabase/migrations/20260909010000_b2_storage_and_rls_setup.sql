@@ -1,13 +1,13 @@
 -- ==============================================================================
--- CAMPUS DOCUMENT HUB - COMPLETE SUPABASE POSTGRES SCHEMA & RLS POLICIES
--- Backblaze B2 Document Storage + Supabase Auth / Profiles / Avatars
+-- CAMPUS DOCUMENT HUB: BACKBLAZE B2 STORAGE & SUPABASE RLS MIGRATION
+-- Version: 20260909010000
 -- ==============================================================================
 
 -- 1. EXTENSIONS
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
--- 2. PROFILES TABLE (Keyed to auth.users.id)
+-- 2. PROFILES TABLE
 CREATE TABLE IF NOT EXISTS public.profiles (
     id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
     full_name TEXT,
@@ -19,10 +19,13 @@ CREATE TABLE IF NOT EXISTS public.profiles (
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_profiles_department ON public.profiles(department);
-CREATE INDEX IF NOT EXISTS idx_profiles_year_semester ON public.profiles(year, semester);
+-- Ensure nullable academic columns for OAuth onboarding flow
+ALTER TABLE public.profiles ALTER COLUMN full_name DROP NOT NULL;
+ALTER TABLE public.profiles ALTER COLUMN year DROP NOT NULL;
+ALTER TABLE public.profiles ALTER COLUMN semester DROP NOT NULL;
+ALTER TABLE public.profiles ALTER COLUMN department DROP NOT NULL;
 
--- 3. TRIGGER FOR NEW AUTH USERS (Google sign-in pre-fills name & avatar; year/semester/department left null)
+-- 3. HANDLE NEW USER TRIGGER (Google sign-in pre-fills name & avatar; year/semester/department left null)
 CREATE OR REPLACE FUNCTION public.handle_new_user()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -67,32 +70,36 @@ CREATE TRIGGER on_auth_user_created
     AFTER INSERT ON auth.users
     FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
 
--- 4. DOCUMENTS TABLE (Referencing Backblaze B2 Resources-hub bucket)
+-- 4. DOCUMENTS TABLE (B2 object keys and exact check constraints)
 CREATE TABLE IF NOT EXISTS public.documents (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     title TEXT NOT NULL,
-    type TEXT NOT NULL CHECK (type IN ('notes', 'assignment', 'experiment', 'end_sem_exam_paper', 'midsem_paper')),
+    type TEXT NOT NULL,
     semester TEXT NOT NULL,
     uploader_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
-    deadline TIMESTAMPTZ, -- Nullable; populated for 'assignment' and 'experiment'
-    file_path TEXT NOT NULL, -- Relative key in Backblaze B2 Resources-hub bucket
+    deadline TIMESTAMPTZ,
+    file_path TEXT NOT NULL, -- Key in Backblaze B2 Resources-hub bucket
     file_name TEXT NOT NULL,
     file_size BIGINT,
     file_type TEXT,
-    file_hash TEXT NOT NULL, -- SHA-256 binary hash for duplicate-file detection
+    file_hash TEXT NOT NULL, -- SHA-256 binary hash for duplicate detection
     page_count INT DEFAULT 1,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Indexes for documents
+-- Ensure check constraint matches lowercase snake_case standard
+ALTER TABLE public.documents DROP CONSTRAINT IF EXISTS documents_type_check;
+ALTER TABLE public.documents ADD CONSTRAINT documents_type_check 
+    CHECK (type IN ('notes', 'assignment', 'experiment', 'end_sem_exam_paper', 'midsem_paper'));
+
+-- Index on file_hash for instantaneous duplicate detection
 CREATE INDEX IF NOT EXISTS idx_documents_file_hash ON public.documents (file_hash);
 CREATE INDEX IF NOT EXISTS idx_documents_uploader ON public.documents (uploader_id);
 CREATE INDEX IF NOT EXISTS idx_documents_type ON public.documents (type);
 CREATE INDEX IF NOT EXISTS idx_documents_semester ON public.documents (semester);
-CREATE INDEX IF NOT EXISTS idx_documents_deadline ON public.documents (deadline);
 CREATE INDEX IF NOT EXISTS idx_documents_created_at ON public.documents (created_at DESC);
 
--- 5. DOCUMENT PAGES (Extracted text per page for granular Gemini AI search & direct page jumping)
+-- 5. DOCUMENT PAGES TABLE (Extracted text for Gemini AI search)
 CREATE TABLE IF NOT EXISTS public.document_pages (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     document_id UUID NOT NULL REFERENCES public.documents(id) ON DELETE CASCADE,
@@ -103,14 +110,16 @@ CREATE TABLE IF NOT EXISTS public.document_pages (
 
 CREATE INDEX IF NOT EXISTS idx_document_pages_document_id ON public.document_pages (document_id);
 CREATE INDEX IF NOT EXISTS idx_document_pages_page_num ON public.document_pages (document_id, page_number);
+
+-- Full-text search index for keyword fallback
 CREATE INDEX IF NOT EXISTS idx_doc_pages_fts ON public.document_pages USING gin(to_tsvector('english', COALESCE(content, '')));
 
--- 6. ROW LEVEL SECURITY (RLS) POLICIES
+-- 6. ROW LEVEL SECURITY (RLS) - STRICTLY ENABLED
 ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.documents ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.document_pages ENABLE ROW LEVEL SECURITY;
 
--- 6.1 PROFILES POLICIES
+-- 6.1 PROFILES RLS
 DROP POLICY IF EXISTS "Allow authenticated users to read profiles" ON public.profiles;
 CREATE POLICY "Allow authenticated users to read profiles"
     ON public.profiles FOR SELECT
@@ -130,7 +139,7 @@ CREATE POLICY "Allow users to update their own profile"
     USING ((SELECT auth.uid()) = id)
     WITH CHECK ((SELECT auth.uid()) = id);
 
--- 6.2 DOCUMENTS POLICIES
+-- 6.2 DOCUMENTS RLS
 DROP POLICY IF EXISTS "Allow authenticated users to read documents" ON public.documents;
 CREATE POLICY "Allow authenticated users to read documents"
     ON public.documents FOR SELECT
@@ -156,7 +165,7 @@ CREATE POLICY "Allow users to delete their own documents"
     TO authenticated
     USING ((SELECT auth.uid()) = uploader_id);
 
--- 6.3 DOCUMENT PAGES POLICIES
+-- 6.3 DOCUMENT PAGES RLS
 DROP POLICY IF EXISTS "Allow authenticated users to read document pages" ON public.document_pages;
 CREATE POLICY "Allow authenticated users to read document pages"
     ON public.document_pages FOR SELECT
@@ -187,11 +196,12 @@ CREATE POLICY "Allow uploader to delete document pages"
         )
     );
 
--- 7. SUPABASE STORAGE BUCKET: AVATARS BUCKET ONLY
+-- 7. SUPABASE STORAGE: AVATARS BUCKET ONLY (Private, user-scoped)
 INSERT INTO storage.buckets (id, name, public)
 VALUES ('avatars', 'avatars', false)
 ON CONFLICT (id) DO UPDATE SET public = false;
 
+-- Clean up storage policies for avatars
 DROP POLICY IF EXISTS "Allow authenticated users to view avatars" ON storage.objects;
 CREATE POLICY "Allow authenticated users to view avatars"
     ON storage.objects FOR SELECT
@@ -203,7 +213,7 @@ CREATE POLICY "Allow authenticated users to upload avatar"
     ON storage.objects FOR INSERT
     TO authenticated
     WITH CHECK (
-        bucket_id = 'avatars' 
+        bucket_id = 'avatars'
         AND (storage.foldername(name))[1] = (SELECT auth.uid())::text
     );
 
@@ -212,11 +222,11 @@ CREATE POLICY "Allow authenticated users to update avatar"
     ON storage.objects FOR UPDATE
     TO authenticated
     USING (
-        bucket_id = 'avatars' 
+        bucket_id = 'avatars'
         AND (storage.foldername(name))[1] = (SELECT auth.uid())::text
     )
     WITH CHECK (
-        bucket_id = 'avatars' 
+        bucket_id = 'avatars'
         AND (storage.foldername(name))[1] = (SELECT auth.uid())::text
     );
 
@@ -225,6 +235,6 @@ CREATE POLICY "Allow authenticated users to delete avatar"
     ON storage.objects FOR DELETE
     TO authenticated
     USING (
-        bucket_id = 'avatars' 
+        bucket_id = 'avatars'
         AND (storage.foldername(name))[1] = (SELECT auth.uid())::text
     );

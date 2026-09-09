@@ -1,6 +1,6 @@
 import { PDFDocument } from 'pdf-lib';
 
-export const MAX_DOCUMENT_FILE_SIZE = 20 * 1024 * 1024; // 20 MB
+export const MAX_DOCUMENT_FILE_SIZE = 25 * 1024 * 1024; // 25 MB
 export const MAX_AVATAR_FILE_SIZE = 3 * 1024 * 1024; // 3 MB
 
 export const ACCEPTED_DOCUMENT_MIME_TYPES = [
@@ -45,6 +45,28 @@ export interface ValidationResult {
   isOffice?: boolean;
 }
 
+export const UNCONVERTIBLE_EXTENSIONS = [
+  '.zip',
+  '.exe',
+  '.mp4',
+  '.rar',
+  '.tar',
+  '.gz',
+  '.7z',
+  '.iso',
+  '.dmg',
+  '.bin',
+  '.avi',
+  '.mov',
+  '.mkv',
+  '.wmv',
+  '.mp3',
+  '.wav',
+  '.apk',
+  '.bat',
+  '.sh',
+];
+
 export function validateDocumentFile(file: File): ValidationResult {
   // Check size
   if (file.size > MAX_DOCUMENT_FILE_SIZE) {
@@ -58,8 +80,20 @@ export function validateDocumentFile(file: File): ValidationResult {
     };
   }
 
-  // Check type & extension
+  // Check extension
   const extension = '.' + (file.name.split('.').pop()?.toLowerCase() || '');
+
+  // Explicitly reject unconvertible formats at dropzone
+  if (UNCONVERTIBLE_EXTENSIONS.includes(extension)) {
+    return {
+      valid: false,
+      isImage: false,
+      isPdf: false,
+      isOffice: false,
+      error: `Format "${extension}" cannot be converted to PDF. Supported formats: PDF, Images (JPG, PNG, WEBP), and Office documents (DOCX, PPTX, XLSX).`,
+    };
+  }
+
   const isPdf = file.type === 'application/pdf' || extension === '.pdf';
   const isImage =
     file.type.startsWith('image/') ||
@@ -228,4 +262,5 @@ function convertImageBlobToPng(file: File): Promise<Blob> {
     img.src = objectUrl;
   });
 }
+
 
