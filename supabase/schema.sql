@@ -79,7 +79,7 @@ CREATE TABLE IF NOT EXISTS public.documents (
     file_name TEXT NOT NULL,
     file_size BIGINT,
     file_type TEXT,
-    file_hash TEXT NOT NULL, -- SHA-256 binary hash for duplicate-file detection
+    file_hash TEXT, -- SHA-256 binary hash for duplicate-file detection (nullable)
     page_count INT DEFAULT 1,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );

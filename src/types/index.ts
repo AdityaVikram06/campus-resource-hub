@@ -10,23 +10,28 @@ export type DbDocumentType =
   | 'assignment'
   | 'experiment'
   | 'end_sem_exam_paper'
-  | 'midsem_paper';
+  | 'midsem_paper'
+  | 'Notes'
+  | 'Assignment'
+  | 'Experiment'
+  | 'End-Sem Exam Paper'
+  | 'Midsem Paper';
 
 export function toDbDocumentType(type: DocumentType | string): DbDocumentType {
   switch (type.toLowerCase().trim()) {
     case 'assignment':
-      return 'assignment';
+      return 'Assignment';
     case 'experiment':
-      return 'experiment';
+      return 'Experiment';
     case 'end-sem exam paper':
     case 'end_sem_exam_paper':
-      return 'end_sem_exam_paper';
+      return 'End-Sem Exam Paper';
     case 'midsem paper':
     case 'midsem_paper':
-      return 'midsem_paper';
+      return 'Midsem Paper';
     case 'notes':
     default:
-      return 'notes';
+      return 'Notes';
   }
 }
 

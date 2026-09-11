@@ -446,27 +446,44 @@ export const DocumentProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         let insertedDoc = null;
         if (isSupabaseConfigured && supabase) {
           try {
-            const { data, error: insertError } = await supabase
+            const insertPayload = {
+              title: title.trim(),
+              type: dbDocType,
+              semester,
+              subject: subject?.trim() || null,
+              uploader_id: user.id,
+              deadline: hasDeadline ? deadline || null : null,
+              file_path: b2Key, // Backblaze B2 Resources-hub object key
+              file_name: cleanFileName,
+              file_size: finalFile.size,
+              file_type: originalFormat, // True stored format (docx, pptx, xlsx, pdf)
+              page_count: pageCount,
+              file_hash: fileHash,
+            };
+
+            let { data, error: insertError } = await supabase
               .from('documents')
-              .insert({
-                title: title.trim(),
-                type: dbDocType,
-                semester,
-                subject: subject?.trim() || null,
-                uploader_id: user.id,
-                deadline: hasDeadline ? deadline || null : null,
-                file_path: b2Key, // Backblaze B2 Resources-hub object key
-                file_name: cleanFileName,
-                file_size: finalFile.size,
-                file_type: originalFormat, // True stored format (docx, pptx, xlsx, pdf)
-                page_count: pageCount,
-                file_hash: fileHash,
-              })
+              .insert(insertPayload)
               .select(`
                 *,
                 uploader:profiles(*)
               `)
               .single();
+
+            // Resilient retry if DB check constraint expects lowercase vs capitalized format
+            if (insertError && insertError.message?.includes('documents_type_check')) {
+              const fallbackType = dbDocType === type ? dbDocType.toLowerCase() : type;
+              const retryRes = await supabase
+                .from('documents')
+                .insert({ ...insertPayload, type: fallbackType })
+                .select(`
+                  *,
+                  uploader:profiles(*)
+                `)
+                .single();
+              data = retryRes.data;
+              insertError = retryRes.error;
+            }
 
             if (insertError) {
               throw new Error(`Failed to save document record: ${insertError.message}`);
